@@ -945,7 +945,7 @@ Program Behavior
         paths should be separated by : on Unix and ; on Windows. mpv looks in
         order for the configured paths in PATH and in mpv's config directory.
         The defaults are "yt-dlp", "yt-dlp_x86" and "youtube-dl". On Windows
-        the suffix extension ".exe" is always appended.
+        the suffix extension is not necessary, but only ".exe" is acceptable.
 
     .. admonition:: Why do the option names mix ``_`` and ``-``?
 
@@ -3437,6 +3437,10 @@ Window
     mechanism in case there is good/bad behavior with whatever your combination
     of hardware/drivers/etc. happens to be.
 
+``--x11-wid-title`` ``--no-x11-wid-title``
+    Whether or not to set the window title when mpv is embedded on X11 (default:
+    ``no``).
+
 
 Disc Devices
 ------------
@@ -4786,6 +4790,10 @@ Terminal
     ``file:`` followed by a space and the currently played filename.
 
     See `Property Expansion`_.
+
+``--term-remaining-playtime``, ``--no-term-remaining-playtime``
+    When printing out the time on the terminal, show the remaining time adjusted by
+    playback speed. Default: ``yes``
 
 ``--term-status-msg=<string>``
     Print out a custom string during playback instead of the standard status
@@ -6699,12 +6707,12 @@ them.
     range of scenes with very bright isolated highlights. Values other than 100
     come with a small performance penalty. (Only for ``--vo=gpu-next``)
 
-``--hdr-peak-decay-rate=<1.0..1000.0>``
+``--hdr-peak-decay-rate=<0.0..1000.0>``
     The decay rate used for the HDR peak detection algorithm (default: 100.0).
     This is only relevant when ``--hdr-compute-peak`` is enabled. Higher values
     make the peak decay more slowly, leading to more stable values at the cost
     of more "eye adaptation"-like effects (although this is mitigated somewhat
-    by ``--hdr-scene-threshold``). A value of 1.0 (the lowest possible) disables
+    by ``--hdr-scene-threshold``). A value of 0.0 (the lowest possible) disables
     all averaging, meaning each frame's value is used directly as measured,
     but doing this is not recommended for "noisy" sources since it may lead
     to excessive flicker. (In signal theory terms, this controls the time
@@ -6918,6 +6926,14 @@ them.
 ``--gpu-shader-cache-dir``
     The directory where gpu shader cache is stored. Cache is stored in the system's
     cache directory (usually ``~/.cache/mpv``) if this is unset.
+
+``--libplacebo-opts=<key>=<value>[,<key>=<value>[,...]]``
+    Passes extra raw option to the libplacebo rendering backend (used by
+    ``--vo=gpu-next``). May override the effects of any other options set using
+    the normal options system. Requires libplacebo v6.309 or higher. Included
+    for debugging purposes only. For more information, see:
+
+    https://code.videolan.org/videolan/libplacebo/-/blob/master/src/options.c#L877
 
 Miscellaneous
 -------------

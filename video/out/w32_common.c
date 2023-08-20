@@ -682,8 +682,12 @@ static MONITORINFO get_monitor_info(struct vo_w32_state *w32)
     HMONITOR mon;
     if (IsWindowVisible(w32->window) && !w32->current_fs) {
         mon = MonitorFromWindow(w32->window, MONITOR_DEFAULTTOPRIMARY);
-    } else {
+	} else if (w32->window_bounds_initialized && !w32->current_fs) {
         // The window is not visible during initialization, so get the
+        // monitor by the cached window rect, or fallback to primary.
+        mon = MonitorFromRect(&w32->windowrc, MONITOR_DEFAULTTOPRIMARY);
+    } else {
+        // The window bounds have not been initialized, so get the
         // monitor by --screen or --fs-screen id, or fallback to primary.
         mon = get_default_monitor(w32);
     }
@@ -970,7 +974,7 @@ static void update_window_state(struct vo_w32_state *w32)
     // Show the window if it's not yet visible
     if (!is_visible(w32->window)) {
         if (w32->opts->window_minimized) {
-            ShowWindow(w32->window, SW_SHOWMINIMIZED);
+            ShowWindow(w32->window, SW_SHOWMINNOACTIVE);
             update_maximized_state(w32); // Set the WPF_RESTORETOMAXIMIZED flag
         } else if (w32->opts->window_maximized) {
             ShowWindow(w32->window, SW_SHOWMAXIMIZED);
@@ -1505,7 +1509,7 @@ static void gui_thread_reconfig(void *ptr)
                 geo.win.x0 + vo->dwidth, geo.win.y0 + vo->dheight);
         w32->prev_windowrc = w32->windowrc;
         w32->window_bounds_initialized = true;
-        w32->fit_on_screen = true;
+        w32->fit_on_screen = !(geo.flags & VO_WIN_FORCE_POS);
         goto finish;
     }
 
@@ -1864,9 +1868,9 @@ static int gui_thread_control(struct vo_w32_state *w32, int request, void *arg)
         *(double*) arg = w32->display_fps;
         return VO_TRUE;
     case VOCTRL_GET_DISPLAY_RES: ;
-        RECT r = get_screen_area(w32);
-        ((int *)arg)[0] = r.right;
-        ((int *)arg)[1] = r.bottom;
+        RECT monrc = get_monitor_info(w32).rcMonitor;
+        ((int *)arg)[0] = monrc.right - monrc.left;
+        ((int *)arg)[1] = monrc.bottom - monrc.top;
         return VO_TRUE;
     case VOCTRL_GET_DISPLAY_NAMES:
         *(char ***)arg = get_disp_names(w32);

@@ -76,7 +76,7 @@ static const struct vo_driver *const video_out_drivers[] =
     &video_out_mediacodec_embed,
 #endif
     &video_out_gpu,
-#if HAVE_LIBPLACEBO_NEXT
+#if HAVE_LIBPLACEBO
     &video_out_gpu_next,
 #endif
 #if HAVE_VDPAU
@@ -906,6 +906,9 @@ static bool render_frame(struct vo *vo)
         frame->pts = 0;
         frame->duration = -1;
     }
+
+    if (in->paused)
+        frame->vsync_offset = 0;
 
     int64_t now = mp_time_us();
     int64_t pts = frame->pts;

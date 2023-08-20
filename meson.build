@@ -747,8 +747,8 @@ if features['uchardet']
     dependencies += uchardet
 endif
 
-vapoursynth = dependency('vapoursynth', version: '>= 24', required: get_option('vapoursynth'))
-vapoursynth_script = dependency('vapoursynth-script', version: '>= 23',
+vapoursynth = dependency('vapoursynth', version: '>= 26', required: get_option('vapoursynth'))
+vapoursynth_script = dependency('vapoursynth-script', version: '>= 26',
                                 required: get_option('vapoursynth'))
 features += {'vapoursynth': vapoursynth.found() and vapoursynth_script.found()}
 if features['vapoursynth']
@@ -836,7 +836,7 @@ oss_opt = get_option('oss-audio').require(
     get_option('gpl'),
     error_message: 'the build is not GPL!',
 )
-features += {'oss-audio': cc.has_header_symbol('sys/soundcard.h', 'SNDCTL_DSP_SETPLAYVOL',
+features += {'oss-audio': cc.has_header_symbol('sys/soundcard.h', 'SNDCTL_DSP_HALT',
                                                required: oss_opt)}
 if features['oss-audio']
     sources += files('audio/out/ao_oss.c')
@@ -929,21 +929,13 @@ if features['jpeg']
     dependencies += jpeg
 endif
 
-libplacebo = dependency('libplacebo', version: '>=4.157.0', required: get_option('libplacebo'))
+libplacebo = dependency('libplacebo', version: '>=6.292.0', required: get_option('libplacebo'))
 features += {'libplacebo': libplacebo.found()}
 if features['libplacebo']
     dependencies += libplacebo
     sources += files('video/out/placebo/ra_pl.c',
-                     'video/out/placebo/utils.c')
-endif
-
-libplacebo_next = get_option('libplacebo-next').require(
-    features['libplacebo'] and libplacebo.version().version_compare('>=5.264.0'),
-    error_message: 'libplacebo v5.264.0+ was not found!',
-)
-features += {'libplacebo-next': libplacebo_next.allowed()}
-if features['libplacebo-next']
-    sources += files('video/out/vo_gpu_next.c',
+                     'video/out/placebo/utils.c',
+                     'video/out/vo_gpu_next.c',
                      'video/out/gpu_next/context.c')
 endif
 
@@ -1043,9 +1035,8 @@ x11 = {
     'deps': [dependency('x11', version: '>= 1.0.0', required: x11_opt),
              dependency('xscrnsaver', version: '>= 1.0.0', required: x11_opt),
              dependency('xext', version: '>= 1.0.0', required: x11_opt),
-             dependency('xinerama', version: '>= 1.0.0', required: x11_opt),
              dependency('xpresent', version: '>= 1.0.0', required: x11_opt),
-             dependency('xrandr', version: '>= 1.2.0', required: x11_opt)],
+             dependency('xrandr', version: '>= 1.4.0', required: x11_opt)],
 }
 x11_deps = true
 foreach dep: x11['deps']
@@ -1339,9 +1330,9 @@ endif
 
 vulkan_interop = get_option('vulkan-interop').require(
     features['vulkan'] and vulkan.version().version_compare('>=1.3.238') and
-    features['libplacebo'] and libplacebo.version().version_compare('>=6.278.0') and
+    features['libplacebo'] and
     libavutil.version().version_compare('>=58.11.100'),
-    error_message: 'Vulkan Interop requires vulkan headers >= 1.3.238, libplacebo >= 6.278.0, and libavutil >= 58.11.100',
+    error_message: 'Vulkan Interop requires vulkan headers >= 1.3.238, libplacebo, and libavutil >= 58.11.100',
 )
 features += {'vulkan-interop': vulkan_interop.allowed()}
 if vulkan_interop.allowed()
@@ -1779,7 +1770,7 @@ if get_option('tests')
 endif
 
 summary({'d3d11': features['d3d11'],
-         'gpu-next': features['libplacebo-next'],
+         'gpu-next': features['libplacebo'],
          'javascript': features['javascript'],
          'libmpv': get_option('libmpv'),
          'lua': features['lua'],
