@@ -198,7 +198,7 @@ much more pleasant if you use the ``winpty`` utility
 
 ```bash
 pacman -S winpty
-winpty mpv.com ToS-4k-1920.mov
+winpty DJmpv.com ToS-4k-1920.mov
 ```
 
 If you want to move / copy ``mpv.exe`` and ``mpv.com`` to somewhere other than

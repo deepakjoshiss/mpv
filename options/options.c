@@ -126,6 +126,7 @@ static const m_option_t mp_vo_opt_list[] = {
     {"window-scale", OPT_DOUBLE(window_scale), M_RANGE(0.001, 100)},
     {"window-minimized", OPT_BOOL(window_minimized)},
     {"window-maximized", OPT_BOOL(window_maximized)},
+    {"window-new", OPT_BOOL(window_new)},
     {"focus-on-open", OPT_BOOL(focus_on_open)},
     {"force-render", OPT_BOOL(force_render)},
     {"force-window-position", OPT_BOOL(force_window_position)},

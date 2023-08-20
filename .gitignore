@@ -1,1 +1,4 @@
 /subprojects
+/bin
+/build
+/.vscode

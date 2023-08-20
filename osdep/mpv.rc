@@ -29,13 +29,13 @@ VS_VERSION_INFO VERSIONINFO
     {
         BLOCK "StringFileInfo" {
             BLOCK "000004b0" {
-                VALUE "Comments", "mpv is distributed under the terms of the GNU General Public License Version 2 or later."
-                VALUE "CompanyName", "mpv"
-                VALUE "FileDescription", "mpv"
+                VALUE "Comments", "DJmpv is distributed under the terms of the GNU General Public License Version 2 or later."
+                VALUE "CompanyName", "DJmpv"
+                VALUE "FileDescription", "DJmpv"
                 VALUE "FileVersion", VERSION
                 VALUE "LegalCopyright", MPVCOPYRIGHT
-                VALUE "OriginalFilename", "mpv.exe"
-                VALUE "ProductName", "mpv"
+                VALUE "OriginalFilename", "DJmpv.exe"
+                VALUE "ProductName", "DJmpv"
                 VALUE "ProductVersion", VERSION
             }
         }

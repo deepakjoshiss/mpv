@@ -20,6 +20,7 @@ typedef struct mp_vo_opts {
     bool all_workspaces;
     bool window_minimized;
     bool window_maximized;
+    bool window_new;
     bool focus_on_open;
 
     int screen_id;

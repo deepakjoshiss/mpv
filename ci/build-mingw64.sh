@@ -211,7 +211,7 @@ meson compile -C build
 if [ "$2" = pack ]; then
     mkdir -p artifact
     echo "Copying:"
-    cp -pv build/player/mpv.com build/mpv.exe "$prefix_dir/bin/"*.dll artifact/
+    cp -pv build/player/DJmpv.com build/DJmpv.exe "$prefix_dir/bin/"*.dll artifact/
     # ship everything and the kitchen sink
     shopt -s nullglob
     for file in /usr/lib/gcc/$TARGET/*-posix/*.dll /usr/$TARGET/lib/*.dll; do
@@ -219,7 +219,7 @@ if [ "$2" = pack ]; then
     done
     echo "Archiving:"
     pushd artifact
-    wine64 ./mpv.com -v --no-config
+    wine64 ./DJmpv.com -v --no-config
     zip -9r "../mpv-git-$(date +%F)-$(git rev-parse --short HEAD)-${TARGET%%-*}.zip" -- *
     popd
 fi

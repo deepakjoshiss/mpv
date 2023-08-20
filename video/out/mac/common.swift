@@ -42,7 +42,7 @@ class Common: NSObject {
 
     var cursorVisibilityWanted: Bool = true
 
-    var title: String = "mpv" {
+    var title: String = "DJmpv" {
         didSet { if let window = window { window.title = title } }
     }
 

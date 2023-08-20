@@ -1,4 +1,4 @@
-project('mpv',
+project('DJmpv',
         'c',
         license: ['GPL2+', 'LGPL2.1+'],
         version: files('./VERSION'),
@@ -1727,7 +1727,7 @@ major = client_h_define.split('|')[0].split('<<')[0].strip('() ')
 minor = client_h_define.split('|')[1].strip('() ')
 client_api_version = major + '.' + minor + '.0'
 
-libmpv = library('mpv', sources, dependencies: dependencies, gnu_symbol_visibility: 'hidden',
+libmpv = library('DJmpv', sources, dependencies: dependencies, gnu_symbol_visibility: 'hidden',
                  version: client_api_version, include_directories: includedir,
                  install: get_option('libmpv'), build_by_default: get_option('libmpv'))
 
@@ -1770,7 +1770,7 @@ if get_option('cplayer')
                  rename: 'mpv.svg')
     install_data('etc/mpv-symbolic.svg', install_dir: join_paths(hicolor_dir, 'symbolic', 'apps'))
 
-    mpv = executable('mpv', objects: libmpv.extract_all_objects(recursive: true), dependencies: dependencies,
+    DJmpv = executable('DJmpv', objects: libmpv.extract_all_objects(recursive: true), dependencies: dependencies,
                      win_subsystem: 'windows,6.0', include_directories: includedir, install: true)
 endif
 

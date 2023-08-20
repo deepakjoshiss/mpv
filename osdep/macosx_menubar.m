@@ -676,7 +676,7 @@
 - (void)about
 {
     NSDictionary *options = [NSDictionary dictionaryWithObjectsAndKeys:
-        @"mpv", @"ApplicationName",
+        @"DJmpv", @"ApplicationName",
         [(Application *)NSApp getMPVIcon], @"ApplicationIcon",
         [NSString stringWithUTF8String:mpv_copyright], @"Copyright",
         [NSString stringWithUTF8String:mpv_version], @"ApplicationVersion",

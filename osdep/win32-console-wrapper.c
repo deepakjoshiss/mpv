@@ -58,6 +58,8 @@ static int cr_runproc(wchar_t *name, wchar_t *cmdline)
 
     ZeroMemory(&pi, sizeof(pi));
 
+    fwprintf(stdout, L">>>>>>> process is starting");
+
     if (!CreateProcessW(name, cmdline, NULL, NULL, TRUE, 0,
                         NULL, NULL, &si, &pi)) {
 

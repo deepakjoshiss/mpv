@@ -79,6 +79,7 @@ struct w32_api {
 };
 
 struct vo_w32_state {
+    long last_data_time;
     struct mp_log *log;
     struct vo *vo;
     struct mp_vo_opts *opts;
@@ -1333,6 +1334,20 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam,
     case WM_SETTINGCHANGE:
         update_dark_mode(w32);
         break;
+
+    case WM_COPYDATA:
+        COPYDATASTRUCT *pcds = (COPYDATASTRUCT *)lParam;
+        int count = (int) (pcds->dwData);
+        
+        char* argvd = (char*)(pcds->lpData);
+        long cur_time = GetTickCount64();
+        long elapsed = cur_time - w32->last_data_time;
+        enum mp_dnd_action action = count == 0 && elapsed > 250 ? DND_REPLACE : DND_APPEND;
+        w32->last_data_time = cur_time;
+        fprintf(stdout, "\n\n= == = = = Message recieved in window ==== = %d == %ld== %s =====\n\n", pcds->dwData, elapsed, argvd);
+        char* files[] = {argvd};
+        mp_event_drop_files(w32->input_ctx, 1, files, action);
+        break;
     }
 
     if (message == w32->tbtnCreatedMsg) {
@@ -1355,7 +1370,7 @@ static void register_window_class(void)
         .hInstance = HINST_THISCOMPONENT,
         .hIcon = LoadIconW(HINST_THISCOMPONENT, L"IDI_ICON1"),
         .hCursor = LoadCursor(NULL, IDC_ARROW),
-        .lpszClassName = L"mpv",
+        .lpszClassName = L"DJmpv",
     });
 }
 
@@ -1572,7 +1587,7 @@ static void *gui_thread(void *ptr)
     if (w32->parent) {
         RECT r;
         GetClientRect(w32->parent, &r);
-        CreateWindowExW(WS_EX_NOPARENTNOTIFY, (LPWSTR)MAKEINTATOM(cls), L"mpv",
+        CreateWindowExW(WS_EX_NOPARENTNOTIFY, (LPWSTR)MAKEINTATOM(cls), L"DJmpv",
                         WS_CHILD | WS_VISIBLE, 0, 0, r.right, r.bottom,
                         w32->parent, 0, HINST_THISCOMPONENT, w32);
 
@@ -1580,7 +1595,7 @@ static void *gui_thread(void *ptr)
         if (w32->window)
             install_parent_hook(w32);
     } else {
-        CreateWindowExW(0, (LPWSTR)MAKEINTATOM(cls), L"mpv",
+        CreateWindowExW(0, (LPWSTR)MAKEINTATOM(cls), L"DJmpv",
                         update_style(w32, 0), CW_USEDEFAULT, SW_HIDE, 100, 100,
                         0, 0, HINST_THISCOMPONENT, w32);
     }
@@ -1832,7 +1847,8 @@ static int gui_thread_control(struct vo_w32_state *w32, int request, void *arg)
         SetThreadExecutionState(ES_CONTINUOUS);
         return VO_TRUE;
     case VOCTRL_UPDATE_WINDOW_TITLE: {
-        wchar_t *title = mp_from_utf8(NULL, (char *)arg);
+        char srcdj[50] = "DJ > ";
+        wchar_t *title = mp_from_utf8(NULL, strncat(srcdj, (char *)arg, 45));
         SetWindowTextW(w32->window, title);
         talloc_free(title);
         return VO_TRUE;
