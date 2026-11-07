@@ -1,0 +1,9 @@
+prefix=${pcfiledir}/..
+includedir=${prefix}/include
+libdir=${prefix}/lib
+Name: libavcodec
+Description: libavcodec (library from mpv.app snapshot, headers at matching source)
+Version: 63.26.100
+Requires: libavutil libswresample
+Libs: -L${libdir} -lavcodec
+Cflags: -I${includedir}

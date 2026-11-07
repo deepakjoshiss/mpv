@@ -1,0 +1,9 @@
+prefix=${pcfiledir}/..
+includedir=${prefix}/include
+libdir=${prefix}/lib
+Name: luajit
+Description: luajit (library from mpv.app snapshot, headers at matching source)
+Version: 2.1.1
+Requires: 
+Libs: -L${libdir} -lluajit-5.1
+Cflags: -I${includedir} -I${includedir}/luajit-2.1

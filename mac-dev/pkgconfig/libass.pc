@@ -1,0 +1,9 @@
+prefix=${pcfiledir}/..
+includedir=${prefix}/include
+libdir=${prefix}/lib
+Name: libass
+Description: libass (library from mpv.app snapshot, headers at matching source)
+Version: 0.17.4
+Requires: 
+Libs: -L${libdir} -lass
+Cflags: -I${includedir} -I/opt/homebrew/opt/libass/include

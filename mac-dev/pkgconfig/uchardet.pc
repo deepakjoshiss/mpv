@@ -1,0 +1,9 @@
+prefix=${pcfiledir}/..
+includedir=${prefix}/include
+libdir=${prefix}/lib
+Name: uchardet
+Description: uchardet (library from mpv.app snapshot, headers at matching source)
+Version: 0.0.8
+Requires: 
+Libs: -L${libdir} -luchardet
+Cflags: -I${includedir} -I${includedir}/uchardet

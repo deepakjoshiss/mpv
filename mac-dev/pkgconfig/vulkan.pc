@@ -1,0 +1,8 @@
+prefix=${pcfiledir}/..
+includedir=${prefix}/include
+libdir=${prefix}/lib
+Name: Vulkan-Loader
+Description: Vulkan loader (from mpv.app snapshot) + Vulkan-Headers v1.4.368
+Version: 1.4.368
+Libs: -L${libdir} -lvulkan
+Cflags: -I${includedir}

@@ -1,0 +1,9 @@
+prefix=${pcfiledir}/..
+includedir=${prefix}/include
+libdir=${prefix}/lib
+Name: libavdevice
+Description: libavdevice (library from mpv.app snapshot, headers at matching source)
+Version: 63.6.100
+Requires: libavfilter libavformat libavcodec libavutil
+Libs: -L${libdir} -lavdevice
+Cflags: -I${includedir}

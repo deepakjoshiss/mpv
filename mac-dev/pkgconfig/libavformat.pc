@@ -1,0 +1,9 @@
+prefix=${pcfiledir}/..
+includedir=${prefix}/include
+libdir=${prefix}/lib
+Name: libavformat
+Description: libavformat (library from mpv.app snapshot, headers at matching source)
+Version: 63.18.100
+Requires: libavcodec libavutil
+Libs: -L${libdir} -lavformat
+Cflags: -I${includedir}

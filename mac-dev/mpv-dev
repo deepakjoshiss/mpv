@@ -1,0 +1,5 @@
+#!/bin/sh
+# Runs the mpv built from ~/work/apps/mpv against the library snapshot in this folder.
+D="$(cd "$(dirname "$0")" && pwd)"
+export VK_DRIVER_FILES="$D/vulkan/icd.d/MoltenVK_icd.json"
+exec "$D/build/mpv/mpv" "$@"

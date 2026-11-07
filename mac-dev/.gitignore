@@ -1,0 +1,9 @@
+# Library snapshot, sources, venv and build output: local only, never committed.
+# They survive checkout, rebase and `git clean -fd`; `git clean -x` would delete them.
+/lib/
+/include/
+/src/
+/venv/
+/build/
+/out/
+__pycache__/

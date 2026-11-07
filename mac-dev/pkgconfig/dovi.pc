@@ -1,0 +1,11 @@
+prefix=${pcfiledir}/..
+exec_prefix=${prefix}
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: dovi
+Description: Dolby Vision metadata parsing and writing
+Version: 3.4.0
+Libs: -L${libdir} -ldovi -liconv -lSystem -lc -lm
+Cflags: -I${includedir}
+Libs.private: -liconv -lSystem -lc -lm

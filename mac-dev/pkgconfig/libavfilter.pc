@@ -1,0 +1,9 @@
+prefix=${pcfiledir}/..
+includedir=${prefix}/include
+libdir=${prefix}/lib
+Name: libavfilter
+Description: libavfilter (library from mpv.app snapshot, headers at matching source)
+Version: 12.12.100
+Requires: libavformat libavcodec libswscale libswresample libavutil
+Libs: -L${libdir} -lavfilter
+Cflags: -I${includedir}

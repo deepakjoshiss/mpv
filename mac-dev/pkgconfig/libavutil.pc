@@ -1,0 +1,9 @@
+prefix=${pcfiledir}/..
+includedir=${prefix}/include
+libdir=${prefix}/lib
+Name: libavutil
+Description: libavutil (library from mpv.app snapshot, headers at matching source)
+Version: 61.20.100
+Requires: 
+Libs: -L${libdir} -lavutil
+Cflags: -I${includedir}

@@ -1,0 +1,9 @@
+prefix=${pcfiledir}/..
+includedir=${prefix}/include
+libdir=${prefix}/lib
+Name: libswresample
+Description: libswresample (library from mpv.app snapshot, headers at matching source)
+Version: 7.7.100
+Requires: libavutil
+Libs: -L${libdir} -lswresample
+Cflags: -I${includedir}

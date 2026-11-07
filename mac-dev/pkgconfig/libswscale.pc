@@ -1,0 +1,9 @@
+prefix=${pcfiledir}/..
+includedir=${prefix}/include
+libdir=${prefix}/lib
+Name: libswscale
+Description: libswscale (library from mpv.app snapshot, headers at matching source)
+Version: 10.6.100
+Requires: libavutil
+Libs: -L${libdir} -lswscale
+Cflags: -I${includedir}
