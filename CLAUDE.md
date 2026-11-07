@@ -8,9 +8,12 @@ profiles 5, 7 and 8, with an OSD that feels like Jellyvin's.
   does. libplacebo then draws only the OSD on top.
 - **Where the code is:** `video/out/vulkan/context_mac.m` (classify and tag frames),
   `video/out/mac/native_video.swift` (the layers) and `vo_gpu_next.c` (the hooks).
-- **Where work happens:** on `master`. This file and `mac-dev/` are ours. Keep commits that touch
-  them separate from code commits, so the mpv changes can go upstream on their own one day
-  (`origin` is upstream mpv; never push there).
+- **Where work happens:** on `dj-dev`, which tracks `fork/dj-dev` (our public fork,
+  `deepakjoshiss/mpv`). `master` only mirrors upstream (`origin`, mpv-player/mpv, push disabled).
+  This file and `mac-dev/` are ours. Keep commits that touch them separate from code commits, so
+  the mpv changes can go upstream on their own one day.
+- **The fork is public.** Never put library titles, work names, internal hosts or credentials in
+  tracked files or commit messages.
 
 ## Always true
 
@@ -24,7 +27,8 @@ profiles 5, 7 and 8, with an OSD that feels like Jellyvin's.
    open Jellyvin's `.dev/servers.env` or `.dev/auth.json`. Logs keep the token as `<token>`.
 4. **Build only through `mac-dev/`** (`mac-dev/rebuild.sh`). Install nothing globally: no Homebrew
    ffmpeg or libplacebo. See `mac-dev/README.md`.
-5. **Commit only when asked. Never push.** No branches, worktrees or PRs.
+5. **Commit and push only when asked, each time.** Push only to `fork`. No new branches, worktrees
+   or PRs.
 6. **Never `git clean -x` or `-X`.** The library snapshot in `mac-dev/` (`lib/`, `include/`, `src/`)
    is gitignored, and it's the only copy.
 7. **Use only the company package mirror** (set in the user-level configs). A block is policy:
