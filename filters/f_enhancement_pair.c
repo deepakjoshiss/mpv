@@ -16,6 +16,7 @@
  */
 
 #include <libavutil/buffer.h>
+#include <libavutil/frame.h>
 
 #include "common/common.h"
 #include "common/msg.h"
@@ -113,6 +114,17 @@ static void inherit_dovi_from_el(struct mp_image *bl, struct mp_image *el)
     bl->params.color.hdr.max_luma = el->params.color.hdr.max_luma;
     bl->params.color.hdr.max_pq_y = el->params.color.hdr.max_pq_y;
     bl->params.color.hdr.avg_pq_y = el->params.color.hdr.avg_pq_y;
+
+    // The raw RPU and FFmpeg's parsed metadata too, for consumers that need the RPU itself
+    // (--macos-native-video hands it to macOS), also when the EL frame is dropped.
+    for (int n = 0; n < el->num_ff_side_data; n++) {
+        struct mp_ff_side_data sd = el->ff_side_data[n];
+        if (sd.type != AV_FRAME_DATA_DOVI_RPU_BUFFER && sd.type != AV_FRAME_DATA_DOVI_METADATA)
+            continue;
+        sd.buf = av_buffer_ref(sd.buf);
+        if (sd.buf)
+            MP_TARRAY_APPEND(NULL, bl->ff_side_data, bl->num_ff_side_data, sd);
+    }
 }
 
 static void pair_process(struct mp_filter *f)
