@@ -1469,7 +1469,13 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
     target_csp.hdr.max_fall = 0;
 
     // --macos-native-video: macOS shows the video itself, below us; we only draw the OSD (in SDR).
+    // The video rect is placed here, before the swapchain may skip this frame (e.g. while the
+    // window appears), relative to the window size p->src/p->dst were computed for.
     bool native = mac_vk_native_frame(p->ra_ctx, frame->current);
+    if (native && vo->params) {
+        mac_vk_native_rect(p->ra_ctx, p->src, p->dst, vo->params->w, vo->params->h,
+                           vo->dwidth, vo->dheight);
+    }
 
     struct pl_color_space hint = {0};
     bool target_hint = !native && (p->next_opts->target_hint == 1 ||
@@ -1675,10 +1681,6 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
     stats_time_end(p->stats, "osd-update");
     apply_crop(&target, p->dst, swframe.fbo->params.w, swframe.fbo->params.h);
     update_tm_viz(&pars->color_map_params, &target);
-    if (native && vo->params) {
-        mac_vk_native_rect(p->ra_ctx, p->src, p->dst, vo->params->w, vo->params->h,
-                           swframe.fbo->params.w, swframe.fbo->params.h);
-    }
 
     struct pl_frame_mix mix = {0};
     if (frame->current) {

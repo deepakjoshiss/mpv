@@ -30,6 +30,10 @@
 #include "context_mac.h"
 #include "utils.h"
 
+#if HAVE_LIBDOVI
+#include <libdovi/rpu_parser.h>
+#endif
+
 // What the native layer is showing; decides which attachments a frame gets.
 enum native_kind {
     NATIVE_NONE,
@@ -37,14 +41,16 @@ enum native_kind {
     NATIVE_DV5,
     NATIVE_DV81,
     NATIVE_DV84,
+    NATIVE_DV7MEL,  // shown as 8.1 with a converted RPU; the (empty) enhancement layer is dropped
 };
 
 static const char *const native_kind_names[] = {
-    [NATIVE_NONE]  = "off (rendered by libplacebo)",
-    [NATIVE_PLAIN] = "on",
-    [NATIVE_DV5]   = "on, Dolby Vision profile 5",
-    [NATIVE_DV81]  = "on, Dolby Vision profile 8.1",
-    [NATIVE_DV84]  = "on, Dolby Vision profile 8.4",
+    [NATIVE_NONE]   = "off (rendered by libplacebo)",
+    [NATIVE_PLAIN]  = "on",
+    [NATIVE_DV5]    = "on, Dolby Vision profile 5",
+    [NATIVE_DV81]   = "on, Dolby Vision profile 8.1",
+    [NATIVE_DV84]   = "on, Dolby Vision profile 8.4",
+    [NATIVE_DV7MEL] = "on, Dolby Vision profile 7 MEL (as 8.1)",
 };
 
 struct priv {
@@ -245,35 +251,109 @@ static AVBufferRef *native_side_data(struct mp_image *mpi, int type)
     return NULL;
 }
 
-static enum native_kind native_classify(struct mp_image *mpi, AVBufferRef **rpu)
+// True if all three reshaping curves are y = x over the whole base layer range, i.e. the base layer
+// already is the Dolby Vision signal. Usual for MEL, and then dropping the mapping changes nothing.
+static bool native_mapping_is_noop(const AVDOVIMetadata *md)
 {
-    if (!mpi || mpi->imgfmt != IMGFMT_VIDEOTOOLBOX || !mpi->planes[3] || mpi->enhancement_layer ||
+    const AVDOVIRpuDataHeader *hdr = av_dovi_get_header(md);
+    const AVDOVIDataMapping *map = av_dovi_get_mapping(md);
+    if (hdr->coef_data_type != 0)   // fixed point only; FFmpeg stores ipart << denom | fpart
+        return false;
+    const int64_t one = 1LL << hdr->coef_log2_denom;
+    const int top = (1 << hdr->bl_bit_depth) - 1;
+    for (int c = 0; c < 3; c++) {
+        const AVDOVIReshapingCurve *curve = &map->curves[c];
+        if (curve->num_pivots != 2 || curve->pivots[0] != 0 || curve->pivots[1] != top ||
+            curve->mapping_idc[0] != AV_DOVI_MAPPING_POLYNOMIAL || curve->poly_order[0] != 1 ||
+            curve->poly_coef[0][0] != 0 || curve->poly_coef[0][1] != one)
+            return false;
+    }
+    return true;
+}
+
+// Profile 7 MEL RPU -> profile 8.1, in FFmpeg's (= Apple's) byte format. NULL if not MEL or on error.
+static CFDataRef native_mel_to_81(struct ra_ctx *ctx, AVBufferRef *rpu)
+{
+#if HAVE_LIBDOVI
+    CFDataRef out = NULL;
+    uint8_t *nal = talloc_size(NULL, rpu->size + 2);
+    nal[0] = 0x7C;   // FFmpeg strips the UNSPEC62 NAL header; libdovi wants it
+    nal[1] = 0x01;
+    memcpy(nal + 2, rpu->data, rpu->size);
+
+    DoviRpuOpaque *r = dovi_parse_unspec62_nalu(nal, rpu->size + 2);
+    const DoviRpuDataHeader *hdr = r ? dovi_rpu_get_header(r) : NULL;
+    const char *err = r ? dovi_rpu_get_error(r) : "parse failed";
+    // libdovi 3.4's C modes: 2|3 = to 8.1 removing the mapping, 4 = static 8.4 (the header comment
+    // still says 4 keeps the mapping; it doesn't). Only used when the mapping is a no-op.
+    if (!err && hdr && hdr->el_type && !strcmp(hdr->el_type, "MEL") &&
+        dovi_convert_rpu_with_mode(r, 2) == 0)
+    {
+        const DoviData *w = dovi_write_unspec62_nalu(r);
+        if (w && w->len > 2)
+            out = CFDataCreate(NULL, w->data + 2, w->len - 2);   // and strip it again
+        if (w)
+            dovi_data_free(w);
+    }
+    if (!out && (err || (r && dovi_rpu_get_error(r))))
+        MP_WARN(ctx, "Native video: RPU conversion failed: %s\n", err ? err : dovi_rpu_get_error(r));
+
+    if (hdr)
+        dovi_rpu_free_header(hdr);
+    if (r)
+        dovi_rpu_free(r);
+    talloc_free(nal);
+    return out;
+#else
+    return NULL;
+#endif
+}
+
+// Decides how `mpi` is shown, and returns the RPU to attach (retained, NULL if none).
+static enum native_kind native_classify(struct ra_ctx *ctx, struct mp_image *mpi, CFDataRef *rpu_out)
+{
+    *rpu_out = NULL;
+    if (!mpi || mpi->imgfmt != IMGFMT_VIDEOTOOLBOX || !mpi->planes[3] ||
         mpi->params.rotate || mpi->params.vflip || mpi->params.stereo3d)
         return NATIVE_NONE;
 
-    if (mpi->params.repr.sys != PL_COLOR_SYSTEM_DOLBYVISION)
-        return cv_matrix(mpi->params.repr.sys) ? NATIVE_PLAIN : NATIVE_NONE;
+    if (mpi->params.repr.sys != PL_COLOR_SYSTEM_DOLBYVISION) {
+        return !mpi->enhancement_layer && cv_matrix(mpi->params.repr.sys)
+            ? NATIVE_PLAIN : NATIVE_NONE;
+    }
 
     AVBufferRef *md = native_side_data(mpi, AV_FRAME_DATA_DOVI_METADATA);
-    *rpu = native_side_data(mpi, AV_FRAME_DATA_DOVI_RPU_BUFFER);
-    if (!md || !*rpu)
+    AVBufferRef *rpu = native_side_data(mpi, AV_FRAME_DATA_DOVI_RPU_BUFFER);
+    if (!md || !rpu)
         return NATIVE_NONE;
 
     // Profile from the RPU itself, the same rules as FFmpeg's ff_dovi_guess_profile_hevc().
-    const AVDOVIRpuDataHeader *hdr = av_dovi_get_header((const AVDOVIMetadata *)md->data);
-    if (hdr->vdr_rpu_profile == 0 && hdr->bl_video_full_range_flag)
-        return NATIVE_DV5;
-    // Profile 7 (and 4) carry an enhancement layer residual; their RPU needs converting first.
-    if (hdr->vdr_rpu_profile != 1 ||
-        (hdr->el_spatial_resampling_filter_flag && !hdr->disable_residual_flag))
+    const AVDOVIMetadata *meta = (const AVDOVIMetadata *)md->data;
+    const AVDOVIRpuDataHeader *hdr = av_dovi_get_header(meta);
+    enum native_kind kind = NATIVE_NONE;
+    if (hdr->vdr_rpu_profile == 0 && hdr->bl_video_full_range_flag) {
+        kind = NATIVE_DV5;
+    } else if (hdr->vdr_rpu_profile == 1 && hdr->el_spatial_resampling_filter_flag &&
+               !hdr->disable_residual_flag) {
+        // Profile 7. MEL with a no-op mapping is the base layer as is: show it as 8.1. FEL needs
+        // the enhancement layer composed in, which only libplacebo does.
+        if (mpi->params.transfer_orig == PL_COLOR_TRC_PQ && native_mapping_is_noop(meta)) {
+            *rpu_out = native_mel_to_81(ctx, rpu);
+            return *rpu_out ? NATIVE_DV7MEL : NATIVE_NONE;
+        }
+        return NATIVE_NONE;
+    } else if (hdr->vdr_rpu_profile == 1) {
+        // Profile 8: the base layer's own transfer tells 8.1 (HDR10) from 8.4 (HLG).
+        if (mpi->params.transfer_orig == PL_COLOR_TRC_PQ)
+            kind = NATIVE_DV81;
+        if (mpi->params.transfer_orig == PL_COLOR_TRC_HLG)
+            kind = NATIVE_DV84;   // 8.2 (SDR) not verified
+    }
+    if (kind == NATIVE_NONE || mpi->enhancement_layer)
         return NATIVE_NONE;
 
-    // Profile 8: the base layer's own transfer tells 8.1 (HDR10) from 8.4 (HLG).
-    switch (mpi->params.transfer_orig) {
-    case PL_COLOR_TRC_PQ:  return NATIVE_DV81;
-    case PL_COLOR_TRC_HLG: return NATIVE_DV84;
-    default:               return NATIVE_NONE;   // 8.2 (SDR) not verified
-    }
+    *rpu_out = CFDataCreate(NULL, rpu->data, rpu->size);
+    return kind;
 }
 
 static void native_put(CVPixelBufferRef pb, CFStringRef key, CFTypeRef value)
@@ -286,8 +366,10 @@ static void native_put(CVPixelBufferRef pb, CFStringRef key, CFTypeRef value)
 }
 
 static void native_tag(CVPixelBufferRef pb, struct mp_image *mpi, enum native_kind kind,
-                       AVBufferRef *rpu)
+                       CFDataRef rpu)
 {
+    if (kind == NATIVE_DV7MEL)   // the converted RPU says 8.1; tag it exactly like 8.1
+        kind = NATIVE_DV81;
     const struct mp_image_params *par = &mpi->params;
     CFStringRef bt2020 = kCVImageBufferColorPrimaries_ITU_R_2020;
 
@@ -335,11 +417,9 @@ static void native_tag(CVPixelBufferRef pb, struct mp_image *mpi, enum native_ki
             CFRelease(att);
     }
 
-    // The RPU is FFmpeg's AV_FRAME_DATA_DOVI_RPU_BUFFER as is: byte-identical to Apple's attachment.
-    CFDataRef rpu_data = kind >= NATIVE_DV5 ? CFDataCreate(NULL, rpu->data, rpu->size) : NULL;
-    native_put(pb, CFSTR("DolbyVisionRPUData"), rpu_data);
-    if (rpu_data)
-        CFRelease(rpu_data);
+    // FFmpeg's AV_FRAME_DATA_DOVI_RPU_BUFFER as is (byte-identical to Apple's attachment), or the
+    // converted one for profile 7 MEL.
+    native_put(pb, CFSTR("DolbyVisionRPUData"), kind >= NATIVE_DV5 ? rpu : NULL);
     // Must be a CFString, never a CFNumber (see above). Apple attaches it for 8.1 only.
     native_put(pb, CFSTR("DolbyCompatibilityID"), kind == NATIVE_DV81 ? CFSTR("1") : NULL);
 }
@@ -376,8 +456,14 @@ bool mac_vk_native_frame(struct ra_ctx *ctx, struct mp_image *mpi)
     if (!p)
         return false;
 
-    AVBufferRef *rpu = NULL;
-    enum native_kind kind = native_classify(mpi, &rpu);
+    // Redraws (pause, OSD changes, resizes) of the frame on screen are neither re-classified
+    // (which may mean an RPU conversion) nor shown again; the layer keeps showing it.
+    CVPixelBufferRef pb = mpi && mpi->imgfmt == IMGFMT_VIDEOTOOLBOX ? (CVPixelBufferRef)mpi->planes[3] : NULL;
+    if (pb && pb == p->native_last && mpi->pts == p->native_last_pts)
+        return p->native_kind != NATIVE_NONE;
+
+    CFDataRef rpu = NULL;
+    enum native_kind kind = native_classify(ctx, mpi, &rpu);
     if (kind != p->native_kind) {
         MP_VERBOSE(ctx, "Native video: %s\n", native_kind_names[kind]);
         p->native_kind = kind;
@@ -387,27 +473,27 @@ bool mac_vk_native_frame(struct ra_ctx *ctx, struct mp_image *mpi)
     if (kind == NATIVE_NONE) {
         if (p->native_staged)
             CVPixelBufferRelease(p->native_staged);
-        p->native_staged = p->native_last = NULL;
+        p->native_staged = NULL;
+        p->native_last = pb;
+        p->native_last_pts = mpi ? mpi->pts : MP_NOPTS_VALUE;
         [p->vo_mac.nativeVideo hide];
         return false;
     }
 
-    // Redraws (pause, OSD changes, resizes) of the frame on screen are not shown again.
-    CVPixelBufferRef pb = (CVPixelBufferRef)mpi->planes[3];
-    if (pb != p->native_last || mpi->pts != p->native_last_pts) {
-        native_tag(pb, mpi, kind, rpu);
-        if (!p->native_logged) {
-            MP_VERBOSE(ctx, "Native video frame attachments:\n");
-            native_log_attachments(ctx, pb);
-            p->native_logged = true;
-        }
-        CVPixelBufferRetain(pb);
-        if (p->native_staged)
-            CVPixelBufferRelease(p->native_staged);
-        p->native_staged = pb;
-        p->native_last = pb;
-        p->native_last_pts = mpi->pts;
+    native_tag(pb, mpi, kind, rpu);
+    if (rpu)
+        CFRelease(rpu);
+    if (!p->native_logged) {
+        MP_VERBOSE(ctx, "Native video frame attachments:\n");
+        native_log_attachments(ctx, pb);
+        p->native_logged = true;
     }
+    CVPixelBufferRetain(pb);
+    if (p->native_staged)
+        CVPixelBufferRelease(p->native_staged);
+    p->native_staged = pb;
+    p->native_last = pb;
+    p->native_last_pts = mpi->pts;
     return true;
 }
 

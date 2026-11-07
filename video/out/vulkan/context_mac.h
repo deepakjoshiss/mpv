@@ -33,7 +33,8 @@ bool mac_vk_native_enabled(struct ra_ctx *ctx);
 // Returns true if `mpi` will be shown by the native layer; the caller then draws only the OSD,
 // premultiplied, on a transparent target. Returns false (and hides the native layer) otherwise.
 bool mac_vk_native_frame(struct ra_ctx *ctx, struct mp_image *mpi);
-// Places the native video: `src` crop of a `w`x`h` image shown at `dst` in a `fb_w`x`fb_h` framebuffer.
+// Places the native video: `src` crop of a `w`x`h` image shown at `dst` in a `fb_w`x`fb_h` window
+// (the size dst was computed for, i.e. vo->dwidth/dheight).
 void mac_vk_native_rect(struct ra_ctx *ctx, struct mp_rect src, struct mp_rect dst,
                         int w, int h, int fb_w, int fb_h);
 // Shows the frame staged by mac_vk_native_frame. Call when the OSD frame is presented.
