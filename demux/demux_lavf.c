@@ -1457,6 +1457,129 @@ static void detect_dovi_split_streams(demuxer_t *demuxer)
     }
 }
 
+// True if `ed` is an hvcC record with no SPS array.
+static bool hvcc_lacks_sps(const uint8_t *ed, int size)
+{
+    if (size < 23 || ed[0] != 1)
+        return false;
+    int pos = 23;
+    for (int a = 0; a < ed[22]; a++) {
+        if (pos + 3 > size)
+            return false;
+        int type = ed[pos] & 0x3f, n = (ed[pos + 1] << 8) | ed[pos + 2];
+        pos += 3;
+        if (type == 33 && n > 0)
+            return false;
+        for (int i = 0; i < n; i++) {
+            if (pos + 2 > size)
+                return false;
+            pos += 2 + ((ed[pos] << 8) | ed[pos + 1]);
+        }
+    }
+    return true;
+}
+
+// Rebuild an hvcC record with the VPS/SPS/PPS found in a length-prefixed packet. Returns false if
+// the packet has no SPS.
+static bool hvcc_add_parameter_sets(AVCodecParameters *par, const uint8_t *data, int size)
+{
+    const int types[3] = {32, 33, 34}; // VPS, SPS, PPS
+    int len_size = (par->extradata[21] & 3) + 1;
+    bstr nals[3][16] = {0};
+    int num[3] = {0};
+    for (int pos = 0; pos + len_size <= size;) {
+        int len = 0;
+        for (int i = 0; i < len_size; i++)
+            len = (len << 8) | data[pos + i];
+        pos += len_size;
+        if (len <= 0 || pos + len > size)
+            break;
+        int type = (data[pos] >> 1) & 0x3f;
+        for (int t = 0; t < 3; t++) {
+            if (type == types[t] && num[t] < 16)
+                nals[t][num[t]++] = (bstr){(unsigned char *)data + pos, len};
+        }
+        pos += len;
+    }
+    if (!num[1])
+        return false;
+
+    int new_size = 23;
+    for (int t = 0; t < 3; t++) {
+        new_size += num[t] ? 3 : 0;
+        for (int i = 0; i < num[t]; i++)
+            new_size += 2 + nals[t][i].len;
+    }
+    uint8_t *ed = av_mallocz(new_size + AV_INPUT_BUFFER_PADDING_SIZE);
+    if (!ed)
+        return false;
+    memcpy(ed, par->extradata, 22);
+    int pos = 23;
+    for (int t = 0; t < 3; t++) {
+        if (!num[t])
+            continue;
+        ed[22]++;
+        ed[pos++] = 0x80 | types[t]; // array_completeness
+        ed[pos++] = num[t] >> 8;
+        ed[pos++] = num[t] & 0xff;
+        for (int i = 0; i < num[t]; i++) {
+            ed[pos++] = nals[t][i].len >> 8;
+            ed[pos++] = nals[t][i].len & 0xff;
+            memcpy(ed + pos, nals[t][i].start, nals[t][i].len);
+            pos += nals[t][i].len;
+        }
+    }
+    av_free(par->extradata);
+    par->extradata = ed;
+    par->extradata_size = new_size;
+    return true;
+}
+
+// Some HEVC files (seen: an hev1 MP4) have an empty hvcC and carry the parameter sets in-band only
+// at the very start, not before later keyframes. Any seek then leaves the decoder without them
+// ("PPS id out of range") and no video ever comes out. Take them from the first packet into the
+// stream header, then rewind.
+static void fix_hevc_parameter_sets(demuxer_t *demuxer)
+{
+    lavf_priv_t *priv = demuxer->priv;
+    AVFormatContext *avfc = priv->avfc;
+
+    int missing = 0;
+    bool fix[64] = {0};
+    for (int n = 0; n < avfc->nb_streams && n < 64; n++) {
+        AVCodecParameters *par = avfc->streams[n]->codecpar;
+        if (par->codec_id == AV_CODEC_ID_HEVC && hvcc_lacks_sps(par->extradata, par->extradata_size)) {
+            fix[n] = true;
+            missing++;
+        }
+    }
+    if (!missing || !demuxer->seekable || priv->format_hack.no_seek)
+        return;
+
+    AVPacket *pkt = av_packet_alloc();
+    if (!pkt)
+        return;
+    for (int i = 0; i < 200 && missing; i++) {
+        if (av_read_frame(avfc, pkt) < 0)
+            break;
+        int n = pkt->stream_index;
+        if (n < 64 && fix[n] &&
+            hvcc_add_parameter_sets(avfc->streams[n]->codecpar, pkt->data, pkt->size))
+        {
+            MP_VERBOSE(demuxer, "HEVC stream %d: no parameter sets in the stream header; "
+                       "took them from the first packet.\n", n);
+            fix[n] = false;
+            missing--;
+        }
+        av_packet_unref(pkt);
+    }
+    av_packet_free(&pkt);
+
+    int64_t start = avfc->start_time != AV_NOPTS_VALUE ? avfc->start_time : 0;
+    if (avformat_seek_file(avfc, -1, INT64_MIN, start, start, 0) < 0)
+        MP_WARN(demuxer, "Could not rewind after reading HEVC parameter sets.\n");
+}
+
 static int demux_open_lavf(demuxer_t *demuxer, enum demux_check check)
 {
     AVFormatContext *avfc = NULL;
@@ -1661,6 +1784,7 @@ static int demux_open_lavf(demuxer_t *demuxer, enum demux_check check)
         mp_tags_move_from_av_dictionary(demuxer->chapters[index].metadata, &c->metadata);
     }
 
+    fix_hevc_parameter_sets(demuxer);
     add_new_streams(demuxer);
     build_editions(demuxer);
 #if LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(60, 19, 100)
