@@ -19,6 +19,7 @@ import Cocoa
 
 class MacCommon: Common {
     @objc var layer: MetalLayer?
+    @objc var nativeVideo: NativeVideo?
 
     var presentation: Presentation?
     var timer: PreciseTimer?
@@ -36,6 +37,11 @@ class MacCommon: Common {
 
         DispatchQueue.main.sync {
             layer = MetalLayer(common: self)
+            if option.mac.macos_native_video, let layer = layer {
+                nativeVideo = NativeVideo(common: self, metalLayer: layer)
+                // the OSD layer must be transparent for the video layer below to show through
+                layer.wantsAlpha = true
+            }
             initMisc(vo)
         }
     }
@@ -54,7 +60,7 @@ class MacCommon: Common {
             }
 
             if window == nil {
-                initView(vo, layer)
+                initView(vo, nativeVideo?.container ?? layer)
                 initWindow(vo, previousActiveApp)
                 initWindowState()
             }
@@ -116,7 +122,7 @@ class MacCommon: Common {
     }
 
     @objc func update(alpha: Bool) {
-        layer?.wantsAlpha = alpha
+        layer?.wantsAlpha = alpha || nativeVideo != nil
         DispatchQueue.main.sync {
             window?.isOpaque = !alpha
             window?.backgroundColor = alpha ? NSColor.clear : nil

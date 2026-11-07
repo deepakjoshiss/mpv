@@ -50,6 +50,7 @@
 #include "gpu/video_shaders.h"
 #include "sub/osd.h"
 #include "gpu_next/context.h"
+#include "vulkan/context_mac.h"
 
 #if HAVE_GL && defined(PL_HAVE_OPENGL)
 #include <libplacebo/opengl.h>
@@ -1467,10 +1468,13 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
     // reports it as maxFALL directly, but this doesn't mean the same thing.
     target_csp.hdr.max_fall = 0;
 
+    // --macos-native-video: macOS shows the video itself, below us; we only draw the OSD (in SDR).
+    bool native = mac_vk_native_frame(p->ra_ctx, frame->current);
+
     struct pl_color_space hint = {0};
-    bool target_hint = p->next_opts->target_hint == 1 ||
+    bool target_hint = !native && (p->next_opts->target_hint == 1 ||
                        (p->next_opts->target_hint == -1 &&
-                        target_csp.transfer != PL_COLOR_TRC_UNKNOWN);
+                        target_csp.transfer != PL_COLOR_TRC_UNKNOWN));
     // Assume HDR is supported, if target_csp() is not available
     // TODO: Remove this fallback when all backends support target_csp()
     bool target_unknown = target_csp.transfer == PL_COLOR_TRC_UNKNOWN;
@@ -1671,6 +1675,10 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
     stats_time_end(p->stats, "osd-update");
     apply_crop(&target, p->dst, swframe.fbo->params.w, swframe.fbo->params.h);
     update_tm_viz(&pars->color_map_params, &target);
+    if (native && vo->params) {
+        mac_vk_native_rect(p->ra_ctx, p->src, p->dst, vo->params->w, vo->params->h,
+                           swframe.fbo->params.w, swframe.fbo->params.h);
+    }
 
     struct pl_frame_mix mix = {0};
     if (frame->current) {
@@ -1770,7 +1778,23 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
 
     // Render frame
     stats_time_start(p->stats, "render");
-    bool render_ok = pl_render_image_mix(p->rr, &mix, &target, &params);
+    // With --macos-native-video our layer is non-opaque and Core Animation composites it
+    // premultiplied, whichever alpha mode the swapchain reports. Frames we render ourselves must
+    // carry alpha too, or they show up as transparent.
+    if (mac_vk_native_enabled(p->ra_ctx))
+        target.repr.alpha = PL_ALPHA_PREMULTIPLIED;
+    bool render_ok;
+    if (native) {
+        // Transparent everywhere except the OSD. With no image libplacebo still clears the
+        // target with the border color (opaque), which would hide the video below; keep our
+        // transparent clear instead.
+        pl_tex_clear(gpu, swframe.fbo, (float[4]){ 0.0, 0.0, 0.0, 0.0 });
+        struct pl_render_params osd_params = params;
+        osd_params.border = PL_CLEAR_SKIP;
+        render_ok = pl_render_image(p->rr, NULL, &target, &osd_params);
+    } else {
+        render_ok = pl_render_image_mix(p->rr, &mix, &target, &params);
+    }
     stats_time_end(p->stats, "render");
     if (!render_ok) {
         MP_ERR(vo, "Failed rendering frame!\n");
@@ -1822,6 +1846,7 @@ static void flip_page(struct vo *vo)
         p->frame_pending = false;
     }
 
+    mac_vk_native_flip(p->ra_ctx);
     sw->fns->swap_buffers(sw);
 }
 

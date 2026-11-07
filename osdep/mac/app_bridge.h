@@ -96,6 +96,7 @@ struct macos_opts {
     int macos_geometry_calculation;
     int macos_render_timer;
     bool macos_menu_shortcuts;
+    bool macos_native_video;
     char **macos_bundle_path;
     int cocoa_cb_sw_renderer;
     bool cocoa_cb_10bit_context;

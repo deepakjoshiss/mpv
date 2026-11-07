@@ -1690,7 +1690,8 @@ if features['macos-cocoa-cb']
 endif
 if features['cocoa'] and features['vulkan'] and features['swift']
     swift_sources += files('video/out/mac_common.swift',
-                           'video/out/mac/metal_layer.swift')
+                           'video/out/mac/metal_layer.swift',
+                           'video/out/mac/native_video.swift')
     sources += files('video/out/vulkan/context_mac.m')
 endif
 

@@ -7248,6 +7248,18 @@ them.
     precedence over any other shortcuts, they are not propagated to the mpv core and they can't be
     used in config files like ``input.conf`` or script bindings.
 
+``--macos-native-video=<yes|no>``
+    Show hardware-decoded video through macOS's own video layer instead of rendering it with
+    libplacebo (default: no). macOS then does the HDR and Dolby Vision processing, including
+    per-frame metadata such as Dolby Vision trims, the same way QuickTime does. mpv still draws the
+    OSD and subtitles on top.
+
+    Only applies to ``--vo=gpu-next`` with ``--gpu-context=macvk`` and ``--hwdec=videotoolbox``.
+    Frames that can't be shown natively (software decoding, Dolby Vision profile 7, rotation,
+    stereo 3D) are rendered by libplacebo as usual. Natively shown video ignores mpv's scaling,
+    shaders, tone mapping and interpolation options, and video screenshots still come from
+    libplacebo.
+
 ``--macos-bundle-path=path1,path2,...``
     App Bundles operate in their own shell environment that is different from the one in the
     terminal. The default PATH variable for all Bundles is ``/usr/bin:/bin:/usr/sbin:/sbin``.
