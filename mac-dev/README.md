@@ -12,7 +12,7 @@ builds against the library snapshot kept here.
 
 | To | Run |
 |---|---|
-| Build after a code change | `./rebuild.sh`: compiles mpv, then rebuilds `~/Applications/mpv Native.app` |
+| Build after a code change | `./rebuild.sh`: compiles mpv, then rebuilds `/Applications/mpv Native.app` |
 | Set up from scratch, or after a `meson.build`/`meson.options` change | `./setup-mpv.sh`, then `./rebuild.sh` |
 | Run the fresh build without the app | `./mpv-dev <file>` (same as the app, from `build/mpv/`) |
 | Everyday use | open files with **mpv Native.app** |
@@ -66,7 +66,7 @@ Baseline, 2026-11-07, 31 titles:
 | 17 | native, profile 8.1 |
 | 7 | native, profile 7 MEL shown as 8.1 |
 | 6 | native, profile 5 |
-| 1 | the libplacebo fallback, expected: profile 7, most likely FEL (not yet confirmed) |
+| 1 | native, profile 7 FEL composed by libplacebo, shown as 8.1 (since 2026-11-08; compose takes a median of 10 ms per 4K frame) |
 
 - **Every title** has 0 PPS errors.
 - **One profile 5 file stops after the seek** (`eof`). It has broken NAL sizes, and stock mpv.app

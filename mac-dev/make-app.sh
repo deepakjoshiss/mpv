@@ -1,10 +1,10 @@
 #!/bin/sh
-# Builds "~/Applications/mpv Native.app" from build/mpv/mpv and the library snapshot in this folder.
+# Builds "/Applications/mpv Native.app" from build/mpv/mpv and the library snapshot in this folder.
 # Re-run after every rebuild. Its own bundle id and log file, so it lives next to /Applications/mpv.app
 # without clashing; both read ~/.config/mpv. Signed ad hoc only (no Apple or work identity).
 set -e
 D="$(cd "$(dirname "$0")" && pwd)"
-APP="$HOME/Applications/mpv Native.app"
+APP="/Applications/mpv Native.app"
 TMP="$APP.building"
 VER=$(sed -n 's/^#define VERSION "v\(.*\)"$/\1/p' "$D/build/mpv/common/version.h")
 

@@ -4,7 +4,7 @@
 # screenshots it 4 s after playback starts, and writes one row per title to out/sweep/sweep.tsv.
 # Run tools/rebuild.sh first; the app, not build/mpv, is what gets tested.
 D=${0:A:h:h}; T=$D/tools; O=$D/out/sweep; mkdir -p $O
-TITLES=${1:-$D/out/titles.tsv}; MPV="$HOME/Applications/mpv Native.app/Contents/MacOS/mpv"
+TITLES=${1:-$D/out/titles.tsv}; MPV="/Applications/mpv Native.app/Contents/MacOS/mpv"
 OUT=$O/sweep.tsv; print -r -- $'title\tjellyfin range\tprofile\tnative path\tvideo after seek\tPPS errors\tbrightness\tstart s' > $OUT
 n=0; total=$(wc -l < $TITLES | tr -d ' ')
 while IFS=$'\t' read -r name id rng rt; do

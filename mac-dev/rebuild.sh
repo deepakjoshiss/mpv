@@ -1,5 +1,5 @@
 #!/bin/sh
-# Compiles ~/work/apps/mpv and rebuilds "~/Applications/mpv Native.app" from it, so the app is never stale.
+# Compiles this mpv checkout and rebuilds "/Applications/mpv Native.app" from it, so the app is never stale.
 # On a fresh checkout or after a meson.build/options change, run setup-mpv.sh first.
 set -e
 D="$(cd "$(dirname "$0")" && pwd)"
