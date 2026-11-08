@@ -1625,8 +1625,12 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
     if (external_params)
         target.color = hint;
     bool strict_sw_params = target_hint && p->next_opts->target_hint_strict;
-    apply_target_options(p, &target, hint.hdr.min_luma, strict_sw_params,
-                         target_ref_luma, &target_csp);
+    // With native video we only draw the OSD, into the layer's own (SDR) color space; target
+    // options describe the display the video is mapped to and would tone map the OSD instead.
+    if (!native) {
+        apply_target_options(p, &target, hint.hdr.min_luma, strict_sw_params,
+                             target_ref_luma, &target_csp);
+    }
     bool clip_gamut = pl_primaries_valid(&target.color.hdr.prim);
     clip_gamut = clip_gamut && target.color.transfer != PL_COLOR_TRC_SCRGB;
     if (clip_gamut) {
