@@ -51,6 +51,7 @@ profiles 5, 7 and 8, with an OSD that feels like Jellyvin's.
 | profile 8.1 | BT.2020 / PQ / BT.2020, the CGColorSpace recomputed from those, the RPU, and `DolbyCompatibilityID` = CFString `"1"` |
 | profile 8.4 | BT.2020 / HLG / BT.2020 and the RPU |
 | profile 7 MEL | converted to 8.1 with libdovi, then tagged as 8.1 |
+| profile 7 FEL | composed by libplacebo into a fresh `x420` IOSurface buffer, then tagged as 8.1 (RPU converted the same way), plus chroma location Left |
 
 The following hold for every kind:
 
@@ -61,8 +62,12 @@ The following hold for every kind:
 - **libdovi 3.4.0 modes:** `2` gives 8.1 and `4` gives 8.4. The header's docs are wrong about this.
   `dovi_parse_unspec62_nalu` wants the `0x7C01` header put back first.
 - **What counts as MEL:** an RPU whose `el_type` is "MEL" **and** whose FFmpeg reshaping is a no-op on
-  all three curves, with base-layer transfer PQ. Anything else is FEL, and it falls back to
-  libplacebo for now.
+  all three curves, with base-layer transfer PQ. Decide on `el_type`, not the mapping: FEL often has
+  a no-op mapping too, with the detail in the residual.
+- **FEL composition:** the target gets the source's own colour space, so libplacebo skips tone and
+  gamut mapping. Checked by composing a MEL title: within one 10-bit code on average. The rare large
+  differences come from libplacebo clamping RGB to 0–1 inside its Dolby Vision decode, which its own
+  FEL rendering does too.
 
 ## References
 
