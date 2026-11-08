@@ -137,6 +137,8 @@ struct priv {
     pl_log pllog;
     pl_gpu gpu;
     pl_renderer rr;
+    pl_renderer native_rr;  // --macos-native-video: composes Dolby Vision FEL for macOS
+    pl_tex native_tex[2];
     pl_queue queue;
     pl_swapchain sw;
     pl_fmt osd_fmt[SUBBITMAP_COUNT];
@@ -1357,6 +1359,86 @@ static void update_tm_viz(struct pl_color_map_params *params,
 static void update_hook_opts_dynamic(struct priv *p, const struct pl_hook *hook,
                                      const struct mp_image *mpi);
 
+// --macos-native-video, Dolby Vision profile 7 FEL: libplacebo composes base and enhancement layer of
+// the frame with `pts` into the 10-bit buffer macOS will show. The target has the source's own color
+// space, so nothing is tone or gamut mapped: the result is the Dolby Vision signal that the
+// converted (8.1, mapping removed) RPU describes, and macOS does the display mapping.
+static void native_compose(struct vo *vo, const struct pl_frame_mix *mix, double pts)
+{
+    struct priv *p = vo->priv;
+    struct mac_vk_native_compose c;
+    if (!mac_vk_native_compose_begin(p->ra_ctx, &c))
+        return;
+
+    const struct pl_frame *src = NULL;
+    for (int i = 0; i < mix->num_frames; i++) {
+        const struct mp_image *mpi = mix->frames[i]->user_data;
+        if (mpi->pts == pts)
+            src = mix->frames[i];
+    }
+    bool ok = false;
+    if (!src) {
+        MP_WARN(vo, "Native video: frame %f is not in the render queue, not composed\n", pts);
+        goto done;
+    }
+
+    struct pl_frame image = *src;
+    image.crop = (pl_rect2df) {0, 0, c.w, c.h};
+    image.num_overlays = 0;
+    struct pl_frame target = {
+        .num_planes = 2,
+        .planes = {
+            { .components = 1, .component_mapping = {0} },
+            { .components = 2, .component_mapping = {1, 2} },
+        },
+        .repr = {
+            .sys = PL_COLOR_SYSTEM_BT_2020_NC,
+            .levels = PL_COLOR_LEVELS_LIMITED,
+            .alpha = PL_ALPHA_NONE,
+            .bits = { .sample_depth = 16, .color_depth = 10, .bit_shift = 6 },   // P010
+        },
+        .color = image.color,
+    };
+    const char *fmt[2] = {"r16", "rg16"};
+    for (int n = 0; n < 2; n++) {
+        bool made = pl_tex_recreate(p->gpu, &p->native_tex[n], pl_tex_params(
+            .w = n ? (c.w + 1) / 2 : c.w,
+            .h = n ? (c.h + 1) / 2 : c.h,
+            .format = pl_find_named_fmt(p->gpu, fmt[n]),
+            .renderable = true,
+            .host_readable = true,
+        ));
+        if (!made) {
+            MP_ERR(vo, "Native video: failed creating the %s compose texture\n", fmt[n]);
+            goto done;
+        }
+        target.planes[n].texture = p->native_tex[n];
+    }
+    pl_frame_set_chroma_location(&target, PL_CHROMA_LEFT);
+
+    if (!p->native_rr)
+        p->native_rr = pl_renderer_create(p->pllog, p->gpu);
+    struct pl_render_params params = pl_render_default_params;
+    params.deband_params = NULL;
+    params.sigmoid_params = NULL;
+    params.peak_detect_params = NULL;
+    stats_time_start(p->stats, "native-compose");
+    ok = pl_render_image(p->native_rr, &image, &target, &params);
+    for (int n = 0; ok && n < 2; n++) {   // blocking
+        ok = pl_tex_download(p->gpu, pl_tex_transfer_params(
+            .tex = p->native_tex[n],
+            .ptr = c.plane[n],
+            .row_pitch = c.stride[n],
+        ));
+    }
+    stats_time_end(p->stats, "native-compose");
+    if (!ok)
+        MP_ERR(vo, "Native video: composing the enhancement layer failed\n");
+
+done:
+    mac_vk_native_compose_end(p->ra_ctx, ok);
+}
+
 static bool draw_frame(struct vo *vo, struct vo_frame *frame)
 {
     struct priv *p = vo->priv;
@@ -1781,6 +1863,9 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
         for (int i = 0; i < pars->params.num_hooks; i++)
             update_hook_opts_dynamic(p, p->hooks[i], frame->current);
     }
+
+    if (native && frame->current)
+        native_compose(vo, &mix, frame->current->pts);
 
     // Render frame
     stats_time_start(p->stats, "render");
@@ -2545,6 +2630,9 @@ static void uninit(struct vo *vo)
 
     pl_icc_close(&p->icc_profile);
     pl_renderer_destroy(&p->rr);
+    pl_renderer_destroy(&p->native_rr);
+    for (int n = 0; n < MP_ARRAY_SIZE(p->native_tex); n++)
+        pl_tex_destroy(p->gpu, &p->native_tex[n]);
 
     for (int i = 0; i < VO_PASS_PERF_MAX; ++i) {
         pl_shader_info_deref(&p->perf_fresh.info[i].shader);

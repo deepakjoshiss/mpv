@@ -42,6 +42,7 @@ enum native_kind {
     NATIVE_DV81,
     NATIVE_DV84,
     NATIVE_DV7MEL,  // shown as 8.1 with a converted RPU; the (empty) enhancement layer is dropped
+    NATIVE_DV7FEL,  // composed by libplacebo (mac_vk_native_compose_*), then shown as 8.1
 };
 
 static const char *const native_kind_names[] = {
@@ -51,6 +52,7 @@ static const char *const native_kind_names[] = {
     [NATIVE_DV81]   = "on, Dolby Vision profile 8.1",
     [NATIVE_DV84]   = "on, Dolby Vision profile 8.4",
     [NATIVE_DV7MEL] = "on, Dolby Vision profile 7 MEL (as 8.1)",
+    [NATIVE_DV7FEL] = "on, Dolby Vision profile 7 FEL (composed, as 8.1)",
 };
 
 struct priv {
@@ -62,6 +64,13 @@ struct priv {
     CVPixelBufferRef native_staged;   // retained until mac_vk_native_flip
     CVPixelBufferRef native_last;     // identity only, with native_last_pts
     double native_last_pts;
+
+    // Profile 7 FEL: the RPU for the frame the caller is about to compose, and where it goes
+    CFDataRef compose_rpu;            // retained; non-NULL while a composed frame is wanted
+    int compose_img_w, compose_img_h; // its size (the decoder's buffer may be padded)
+    CVPixelBufferRef compose_pb;      // the buffer handed out by begin, locked until end
+    CVPixelBufferPoolRef compose_pool;
+    int compose_w, compose_h;
 };
 
 static void mac_vk_uninit(struct ra_ctx *ctx)
@@ -70,6 +79,10 @@ static void mac_vk_uninit(struct ra_ctx *ctx)
 
     if (p->native_staged)
         CVPixelBufferRelease(p->native_staged);
+    if (p->compose_rpu)
+        CFRelease(p->compose_rpu);
+    if (p->compose_pool)
+        CVPixelBufferPoolRelease(p->compose_pool);
     ra_vk_ctx_uninit(ctx);
     mpvk_uninit(&p->vk);
     [p->vo_mac uninit:ctx->vo];
@@ -271,8 +284,11 @@ static bool native_mapping_is_noop(const AVDOVIMetadata *md)
     return true;
 }
 
-// Profile 7 MEL RPU -> profile 8.1, in FFmpeg's (= Apple's) byte format. NULL if not MEL or on error.
-static CFDataRef native_mel_to_81(struct ra_ctx *ctx, AVBufferRef *rpu)
+// Profile 7 RPU -> profile 8.1, in FFmpeg's (= Apple's) byte format: the reshaping and the NLQ are
+// dropped, the display management metadata kept. Right for MEL whose mapping is a no-op, and for any
+// profile 7 frame once the enhancement layer has been composed in. *mel tells which EL type the RPU
+// declares. NULL on error.
+static CFDataRef native_p7_to_81(struct ra_ctx *ctx, AVBufferRef *rpu, bool *mel)
 {
 #if HAVE_LIBDOVI
     CFDataRef out = NULL;
@@ -285,8 +301,10 @@ static CFDataRef native_mel_to_81(struct ra_ctx *ctx, AVBufferRef *rpu)
     const DoviRpuDataHeader *hdr = r ? dovi_rpu_get_header(r) : NULL;
     const char *err = r ? dovi_rpu_get_error(r) : "parse failed";
     // libdovi 3.4's C modes: 2|3 = to 8.1 removing the mapping, 4 = static 8.4 (the header comment
-    // still says 4 keeps the mapping; it doesn't). Only used when the mapping is a no-op.
-    if (!err && hdr && hdr->el_type && !strcmp(hdr->el_type, "MEL") &&
+    // still says 4 keeps the mapping; it doesn't).
+    MP_TRACE(ctx, "Native video: profile 7 RPU, %s\n", hdr && hdr->el_type ? hdr->el_type : "no EL type");
+    *mel = hdr && hdr->el_type && !strcmp(hdr->el_type, "MEL");
+    if (!err && hdr && hdr->el_type &&
         dovi_convert_rpu_with_mode(r, 2) == 0)
     {
         const DoviData *w = dovi_write_unspec62_nalu(r);
@@ -335,12 +353,22 @@ static enum native_kind native_classify(struct ra_ctx *ctx, struct mp_image *mpi
         kind = NATIVE_DV5;
     } else if (hdr->vdr_rpu_profile == 1 && hdr->el_spatial_resampling_filter_flag &&
                !hdr->disable_residual_flag) {
-        // Profile 7. MEL with a no-op mapping is the base layer as is: show it as 8.1. FEL needs
-        // the enhancement layer composed in, which only libplacebo does.
-        if (mpi->params.transfer_orig == PL_COLOR_TRC_PQ && native_mapping_is_noop(meta)) {
-            *rpu_out = native_mel_to_81(ctx, rpu);
-            return *rpu_out ? NATIVE_DV7MEL : NATIVE_NONE;
-        }
+        // Profile 7. MEL with a no-op mapping is the base layer as is: show it as 8.1. Otherwise
+        // (FEL, whatever its mapping; MEL with a real one) the caller composes base and enhancement
+        // layer into a fresh 10-bit buffer first. The RPU conversion is the same either way.
+        if (mpi->params.transfer_orig != PL_COLOR_TRC_PQ)
+            return NATIVE_NONE;
+        bool mel = false;
+        *rpu_out = native_p7_to_81(ctx, rpu, &mel);
+        if (*rpu_out && mel && native_mapping_is_noop(meta))
+            return NATIVE_DV7MEL;
+        if (*rpu_out && mpi->enhancement_layer &&
+            CVPixelBufferGetPixelFormatType((CVPixelBufferRef)mpi->planes[3]) ==
+                kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange)
+            return NATIVE_DV7FEL;
+        if (*rpu_out)
+            CFRelease(*rpu_out);
+        *rpu_out = NULL;
         return NATIVE_NONE;
     } else if (hdr->vdr_rpu_profile == 1) {
         // Profile 8: the base layer's own transfer tells 8.1 (HDR10) from 8.4 (HLG).
@@ -365,12 +393,12 @@ static void native_put(CVPixelBufferRef pb, CFStringRef key, CFTypeRef value)
     }
 }
 
-static void native_tag(CVPixelBufferRef pb, struct mp_image *mpi, enum native_kind kind,
+// `par` is only used for NATIVE_PLAIN.
+static void native_tag(CVPixelBufferRef pb, const struct mp_image_params *par, enum native_kind kind,
                        CFDataRef rpu)
 {
-    if (kind == NATIVE_DV7MEL)   // the converted RPU says 8.1; tag it exactly like 8.1
+    if (kind == NATIVE_DV7MEL || kind == NATIVE_DV7FEL)   // the converted RPU says 8.1; tag it like 8.1
         kind = NATIVE_DV81;
-    const struct mp_image_params *par = &mpi->params;
     CFStringRef bt2020 = kCVImageBufferColorPrimaries_ITU_R_2020;
 
     switch (kind) {
@@ -445,6 +473,20 @@ static struct priv *native_priv(struct ra_ctx *ctx)
     return p && p->vo_mac.nativeVideo ? p : NULL;
 }
 
+// Keeps `pb` (retained) for mac_vk_native_flip, logging its attachments once per kind.
+static void native_stage(struct ra_ctx *ctx, struct priv *p, CVPixelBufferRef pb)
+{
+    if (!p->native_logged) {
+        MP_VERBOSE(ctx, "Native video frame attachments:\n");
+        native_log_attachments(ctx, pb);
+        p->native_logged = true;
+    }
+    CVPixelBufferRetain(pb);
+    if (p->native_staged)
+        CVPixelBufferRelease(p->native_staged);
+    p->native_staged = pb;
+}
+
 bool mac_vk_native_enabled(struct ra_ctx *ctx)
 {
     return native_priv(ctx) != NULL;
@@ -461,6 +503,10 @@ bool mac_vk_native_frame(struct ra_ctx *ctx, struct mp_image *mpi)
     CVPixelBufferRef pb = mpi && mpi->imgfmt == IMGFMT_VIDEOTOOLBOX ? (CVPixelBufferRef)mpi->planes[3] : NULL;
     if (pb && pb == p->native_last && mpi->pts == p->native_last_pts)
         return p->native_kind != NATIVE_NONE;
+
+    if (p->compose_rpu)   // a previous FEL frame that was never composed
+        CFRelease(p->compose_rpu);
+    p->compose_rpu = NULL;
 
     CFDataRef rpu = NULL;
     enum native_kind kind = native_classify(ctx, mpi, &rpu);
@@ -480,21 +526,86 @@ bool mac_vk_native_frame(struct ra_ctx *ctx, struct mp_image *mpi)
         return false;
     }
 
-    native_tag(pb, mpi, kind, rpu);
-    if (rpu)
-        CFRelease(rpu);
-    if (!p->native_logged) {
-        MP_VERBOSE(ctx, "Native video frame attachments:\n");
-        native_log_attachments(ctx, pb);
-        p->native_logged = true;
-    }
-    CVPixelBufferRetain(pb);
-    if (p->native_staged)
-        CVPixelBufferRelease(p->native_staged);
-    p->native_staged = pb;
     p->native_last = pb;
     p->native_last_pts = mpi->pts;
+    if (kind == NATIVE_DV7FEL) {
+        p->compose_rpu = rpu;   // staged by mac_vk_native_compose_end
+        p->compose_img_w = mpi->params.w;
+        p->compose_img_h = mpi->params.h;
+        return true;
+    }
+
+    native_tag(pb, &mpi->params, kind, rpu);
+    if (rpu)
+        CFRelease(rpu);
+    native_stage(ctx, p, pb);
     return true;
+}
+
+bool mac_vk_native_compose_begin(struct ra_ctx *ctx, struct mac_vk_native_compose *c)
+{
+    struct priv *p = native_priv(ctx);
+    if (!p || !p->compose_rpu || p->compose_pb)
+        return false;
+    int w = p->compose_img_w, h = p->compose_img_h;
+
+    if (!p->compose_pool || p->compose_w != w || p->compose_h != h) {
+        if (p->compose_pool)
+            CVPixelBufferPoolRelease(p->compose_pool);
+        p->compose_pool = NULL;
+        NSDictionary *attrs = @{
+            (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange),
+            (id)kCVPixelBufferWidthKey: @(w),
+            (id)kCVPixelBufferHeightKey: @(h),
+            (id)kCVPixelBufferIOSurfacePropertiesKey: @{},
+        };
+        if (CVPixelBufferPoolCreate(NULL, NULL, (CFDictionaryRef)attrs, &p->compose_pool) != kCVReturnSuccess) {
+            MP_ERR(ctx, "Native video: failed creating a %dx%d buffer pool\n", w, h);
+            p->compose_pool = NULL;
+            return false;
+        }
+        p->compose_w = w;
+        p->compose_h = h;
+    }
+
+    CVPixelBufferRef pb = NULL;
+    if (CVPixelBufferPoolCreatePixelBuffer(NULL, p->compose_pool, &pb) != kCVReturnSuccess ||
+        CVPixelBufferLockBaseAddress(pb, 0) != kCVReturnSuccess)
+    {
+        MP_ERR(ctx, "Native video: failed getting a buffer to compose into\n");
+        if (pb)
+            CVPixelBufferRelease(pb);
+        return false;
+    }
+    p->compose_pb = pb;
+    *c = (struct mac_vk_native_compose) { .w = w, .h = h };
+    for (int n = 0; n < 2; n++) {
+        c->plane[n] = CVPixelBufferGetBaseAddressOfPlane(pb, n);
+        c->stride[n] = CVPixelBufferGetBytesPerRowOfPlane(pb, n);
+    }
+    return true;
+}
+
+void mac_vk_native_compose_end(struct ra_ctx *ctx, bool ok)
+{
+    struct priv *p = native_priv(ctx);
+    if (!p || !p->compose_pb)
+        return;
+    CVPixelBufferRef pb = p->compose_pb;
+    p->compose_pb = NULL;
+    CVPixelBufferUnlockBaseAddress(pb, 0);
+    if (ok) {
+        // What the decoder would have attached to a 4:2:0 HEVC frame, then the 8.1 tags.
+        CVBufferSetAttachment(pb, kCVImageBufferChromaLocationTopFieldKey,
+                              kCVImageBufferChromaLocation_Left, kCVAttachmentMode_ShouldPropagate);
+        CVBufferSetAttachment(pb, kCVImageBufferChromaLocationBottomFieldKey,
+                              kCVImageBufferChromaLocation_Left, kCVAttachmentMode_ShouldPropagate);
+        native_tag(pb, NULL, NATIVE_DV7FEL, p->compose_rpu);
+        native_stage(ctx, p, pb);
+    }
+    CVPixelBufferRelease(pb);
+    CFRelease(p->compose_rpu);
+    p->compose_rpu = NULL;
 }
 
 void mac_vk_native_rect(struct ra_ctx *ctx, struct mp_rect src, struct mp_rect dst,

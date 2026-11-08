@@ -39,10 +39,27 @@ void mac_vk_native_rect(struct ra_ctx *ctx, struct mp_rect src, struct mp_rect d
                         int w, int h, int fb_w, int fb_h);
 // Shows the frame staged by mac_vk_native_frame. Call when the OSD frame is presented.
 void mac_vk_native_flip(struct ra_ctx *ctx);
+
+// Dolby Vision profile 7 FEL: mac_vk_native_frame accepted the frame, but the native layer needs
+// the enhancement layer composed in first, which the caller does with libplacebo. If a composed
+// frame is wanted, begin returns true and fills `c` with a fresh 10-bit 4:2:0 buffer (P010 layout:
+// 16-bit samples, 10 significant bits at the top; BT.2020 non-constant luminance, limited range,
+// left chroma siting) to write the full, uncropped image into. End stages it (or drops it, !ok).
+struct mac_vk_native_compose {
+    int w, h;
+    void *plane[2];       // Y, then interleaved CbCr at half width and height
+    size_t stride[2];     // bytes per row
+};
+bool mac_vk_native_compose_begin(struct ra_ctx *ctx, struct mac_vk_native_compose *c);
+void mac_vk_native_compose_end(struct ra_ctx *ctx, bool ok);
 #else
 static inline bool mac_vk_native_enabled(struct ra_ctx *ctx) { return false; }
 static inline bool mac_vk_native_frame(struct ra_ctx *ctx, struct mp_image *mpi) { return false; }
 static inline void mac_vk_native_rect(struct ra_ctx *ctx, struct mp_rect src, struct mp_rect dst,
                                       int w, int h, int fb_w, int fb_h) {}
 static inline void mac_vk_native_flip(struct ra_ctx *ctx) {}
+struct mac_vk_native_compose { int w, h; void *plane[2]; size_t stride[2]; };
+static inline bool mac_vk_native_compose_begin(struct ra_ctx *ctx,
+                                               struct mac_vk_native_compose *c) { return false; }
+static inline void mac_vk_native_compose_end(struct ra_ctx *ctx, bool ok) {}
 #endif

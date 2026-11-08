@@ -7255,10 +7255,12 @@ them.
     OSD and subtitles on top.
 
     Only applies to ``--vo=gpu-next`` with ``--gpu-context=macvk`` and ``--hwdec=videotoolbox``.
-    Dolby Vision profiles 5, 8.1 and 8.4 are shown natively. Profile 7 MEL is shown as 8.1 when mpv
-    is built with libdovi and the base layer mapping is a no-op (the usual case); the enhancement
-    layer is then not used. Frames that can't be shown natively (software decoding, profile 7 FEL,
-    rotation, stereo 3D) are rendered by libplacebo as usual. Natively shown video ignores mpv's scaling,
+    Dolby Vision profiles 5, 8.1 and 8.4 are shown natively. Profile 7 needs mpv built with
+    libdovi and is shown as 8.1: MEL with a no-op base layer mapping (the usual case) as it is, the
+    enhancement layer not used; FEL (and MEL with a real mapping) after libplacebo composes base and
+    enhancement layer into a 10-bit frame, with no tone mapping. That costs a GPU render and a copy
+    per frame. Frames that can't be shown natively (software decoding, rotation, stereo 3D, a
+    missing enhancement layer) are rendered by libplacebo as usual. Natively shown video ignores mpv's scaling,
     shaders, tone mapping and interpolation options, and video screenshots still come from
     libplacebo.
 
