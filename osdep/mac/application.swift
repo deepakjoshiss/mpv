@@ -86,6 +86,21 @@ class Application: NSApplication, NSApplicationDelegate {
         }
     }
 
+    // Before options are parsed, a bundle start shows in the Dock. Helper instances that scripts
+    // start with the bundle's binary (thumbfast's thumbnailer) inherit MPVBUNDLE and ask to stay out
+    // of the Dock on the command line, but may never create a VO, where that option is applied.
+    func initialActivationPolicy() -> NSApplication.ActivationPolicy {
+        if !appHub.isBundle { return .accessory }
+        for arg in CommandLine.arguments {
+            switch arg {
+            case "--macos-app-activation-policy=accessory": return .accessory
+            case "--macos-app-activation-policy=prohibited": return .prohibited
+            default: break
+            }
+        }
+        return .regular
+    }
+
     let playbackThread: @convention(c) (UnsafeMutableRawPointer) -> UnsafeMutableRawPointer? = { (ptr: UnsafeMutableRawPointer) in
         let application: Application = TypeHelper.bridge(ptr: ptr)
         mp_thread_set_name("core/playback")
@@ -100,7 +115,7 @@ class Application: NSApplication, NSApplicationDelegate {
 
         NSApp = self
         NSApp.delegate = self
-        NSApp.setActivationPolicy(appHub.isBundle ? .regular : .accessory)
+        NSApp.setActivationPolicy(initialActivationPolicy())
         setupBundle()
         pthread_create(&playbackThreadId, nil, playbackThread, TypeHelper.bridge(obj: self))
         appHub.input.wait()
