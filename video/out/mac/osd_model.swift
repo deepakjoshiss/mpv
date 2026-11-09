@@ -204,6 +204,8 @@ struct OSDLayout {
     var timesTop: CGFloat { return top(120, 24) }
     var trackTop: CGFloat { return top(129, 6) }
     var bladeTop: CGFloat { return top(121, 22) }
+    var readoutTop: CGFloat { return trackTop + 17 }   // SEEKING ±m:ss: cap top 8 px under the grown track
+    var nowLineTop: CGFloat { return top(48, 35) }     // the seek-only bar's NOW PLAYING line
     var keysTop: CGFloat { return top(32, 48) }
     var veilTop: CGFloat { return height - veil }
     var trackLeft: CGFloat { return margin + (compact ? 102 : 110) }

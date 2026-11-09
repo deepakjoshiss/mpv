@@ -46,10 +46,18 @@ class NativeOSD: NSView, EventSubscriber {
     var state = OSDState()
     var geo = OSDLayout(viewWidth: 1920, viewHeight: 1080)
 
+    // Two ways up, as Jellyvin's VideoOSD and DialogSeekBar: the full OSD, or (a seek with the OSD
+    // closed) the seek-only bar, which is the OSD's seek row plus one NOW PLAYING line. The row is shared
+    // so that opening the OSD over a seek leaves it where it is and only the rest moves.
+    enum Mode { case hidden, seek, osd }
+
     let canvas = CALayer()
+    let band = CALayer()        // the OSD's own parts
+    let row = CALayer()         // the seek row: times, track, blade, readout
+    let line = CALayer()        // the seek-only bar's NOW PLAYING line
     let veil = CAGradientLayer()
     let kicker = CATextLayer(), title = CATextLayer(), meta = CATextLayer(), clock = CATextLayer()
-    let elapsed = CATextLayer(), remaining = CATextLayer()
+    let elapsed = CATextLayer(), remaining = CATextLayer(), readout = CATextLayer(), nowLine = CATextLayer()
     let track = CALayer(), played = CALayer(), blade = CALayer()
     var notches: [CALayer] = []
     var badges: [(CALayer, CATextLayer)] = []
@@ -63,8 +71,15 @@ class NativeOSD: NSView, EventSubscriber {
     var panelType: String?      // "sub" or "audio" while the track panel is open
     var panelScroll = 0
     var dragFraction: Double?   // set while the seek bar is dragged
-    var shown = false
+    var mode = Mode.hidden
+    var shown: Bool { return mode == .osd }
+    var started = false         // the file's first playback restart is past: later seeks are the user's
+    var seekOffset: Double?     // how far the current run of seeks has jumped, playback not counted
+    var seekFrom: Double?       // the position a seek left from, until its new time-pos arrives
+    var settleTimer: Timer?
     var hideTimer: Timer?
+    var clickMonitor: Any?
+    var hiddenAt: NSPoint?      // where a click on the video hid the OSD
     var lastSecond = -1
     var lastBadges: [String] = []
 
@@ -74,8 +89,14 @@ class NativeOSD: NSView, EventSubscriber {
         super.init(frame: frame)
         autoresizingMask = [.width, .height]
         wantsLayer = true
-        layer?.opacity = 0
+        canvas.opacity = 0
         canvas.anchorPoint = .zero
+        for g in [band, row, line] {
+            g.anchorPoint = .zero
+            g.transform = OSDMotion.away
+        }
+        readout.opacity = 0
+        veil.anchorPoint = .zero
         layer?.addSublayer(canvas)
         build()
 
@@ -86,10 +107,22 @@ class NativeOSD: NSView, EventSubscriber {
         ev?.subscribe(self, event: .init(name: "duration", format: MPV_FORMAT_DOUBLE))
         ev?.subscribe(self, event: .init(name: "speed", format: MPV_FORMAT_DOUBLE))
         ev?.subscribe(self, event: .init(name: "pause", format: MPV_FORMAT_FLAG))
-        ev?.subscribe(self, event: .init(name: "seeking", format: MPV_FORMAT_FLAG))
+        ev?.subscribe(self, event: .init(name: "MPV_EVENT_START_FILE"))
+        ev?.subscribe(self, event: .init(name: "MPV_EVENT_SEEK"))
+        ev?.subscribe(self, event: .init(name: "MPV_EVENT_PLAYBACK_RESTART"))
         ev?.subscribe(self, event: .init(name: "chapter-list", format: MPV_FORMAT_NODE))
         ev?.subscribe(self, event: .init(name: "track-list", format: MPV_FORMAT_NODE))
         ev?.subscribe(self, event: .init(name: "video-params/gamma", format: MPV_FORMAT_STRING))
+
+        // seen before the click is dispatched, and passed on, so mpv still gets it (double-click)
+        clickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+            self?.clickedVideo(event)
+            return event
+        }
+    }
+
+    deinit {
+        if let m = clickMonitor { NSEvent.removeMonitor(m) }
     }
 
     required init?(coder: NSCoder) {
@@ -110,7 +143,10 @@ class NativeOSD: NSView, EventSubscriber {
         track.addSublayer(played)
         blade.backgroundColor = OSDStyle.text
         blade.cornerRadius = 2
-        [veil, kicker, title, meta, clock, elapsed, remaining, track, blade].forEach { canvas.addSublayer($0) }
+        [veil, row, line, band].forEach { canvas.addSublayer($0) }   // band last: its panel covers the row
+        [kicker, title, meta, clock].forEach { band.addSublayer($0) }
+        [elapsed, remaining, track, blade, readout].forEach { row.addSublayer($0) }
+        line.addSublayer(nowLine)
 
         let order: [(Control, OSDIcon)] = [(.bookmark, .bookmark), (.info, .info), (.options, .options),
             (.chapterPrev, .prev), (.back, .back), (.playPause, .pause), (.forward, .forward), (.chapterNext, .next)]
@@ -119,7 +155,7 @@ class NativeOSD: NSView, EventSubscriber {
             key.plate.cornerRadius = 8
             key.icon.path = icon.path(size: icon.size)
             key.plate.addSublayer(key.icon)
-            canvas.addSublayer(key.plate)
+            band.addSublayer(key.plate)
             keys.append(key)
         }
         for (control, icon) in [(Control.subs, OSDIcon.subs), (.audio, .audio)] {
@@ -132,7 +168,7 @@ class NativeOSD: NSView, EventSubscriber {
             pill.chip.cornerRadius = 6
             pill.chip.backgroundColor = OSDStyle.fill2
             [pill.icon, pill.label, pill.chip, pill.tag].forEach { pill.plate.addSublayer($0) }
-            canvas.addSublayer(pill.plate)
+            band.addSublayer(pill.plate)
             pills.append(pill)
         }
 
@@ -142,7 +178,7 @@ class NativeOSD: NSView, EventSubscriber {
         panel.borderColor = OSDStyle.line
         panel.isHidden = true
         panel.zPosition = 10   // above badges, which are re-added as they change
-        canvas.addSublayer(panel)
+        band.addSublayer(panel)
     }
 
     // MARK: mpv state
@@ -151,11 +187,21 @@ class NativeOSD: NSView, EventSubscriber {
         switch event.name {
         case "media-title": state.title = event.string ?? ""; poke()
         case "metadata/by-key/date": state.date = event.string
-        case "time-pos": state.position = event.double ?? 0
+        case "time-pos":
+            state.position = event.double ?? 0
+            if let from = seekFrom {   // the first time-pos after a seek is its target (measured)
+                seekOffset = (seekOffset ?? 0) + state.position - from
+                seekFrom = nil
+            }
         case "duration": state.duration = event.double ?? 0
         case "speed": state.speed = event.double ?? 1
         case "pause": state.paused = event.bool ?? false; poke()
-        case "seeking": if event.bool == true { poke() }
+        case "MPV_EVENT_START_FILE": started = false; seekFrom = nil; return
+        case "MPV_EVENT_PLAYBACK_RESTART":
+            started = true
+            if seekOffset != nil { holdSeek() }   // the hold counts from where the seek landed
+            return
+        case "MPV_EVENT_SEEK": if started { seeked() }
         case "video-params/gamma": state.gamma = event.string
         case "chapter-list":
             state.chapters = event.array.compactMap { ($0 as? [String: Any?])?["time"] as? Double }
@@ -182,9 +228,15 @@ class NativeOSD: NSView, EventSubscriber {
         canvas.bounds = CGRect(x: 0, y: 0, width: L.width, height: L.height)
         canvas.position = .zero
         canvas.setAffineTransform(CGAffineTransform(scaleX: s, y: s))
+        for g in [band, row, line] {
+            g.bounds = canvas.bounds   // not frame: each carries a slide transform
+            g.position = .zero
+        }
         hitRects = []
 
-        veil.frame = CGRect(x: 0, y: L.veilTop, width: L.width, height: L.veil)
+        veil.bounds = CGRect(x: 0, y: 0, width: L.width, height: L.veil)   // not frame: it carries veilDrop
+        veil.position = CGPoint(x: 0, y: L.veilTop)
+        veil.transform = veilDrop
         let titleWidth = L.width - 2 * L.margin - (L.compact ? 360 : 560)
         set(kicker, kickerText, OSDStyle.font(.wide, 15), OSDStyle.accent,
             CGRect(x: L.margin, y: L.kickerTop, width: titleWidth, height: 22))
@@ -201,8 +253,13 @@ class NativeOSD: NSView, EventSubscriber {
             CGRect(x: L.margin, y: L.timesTop, width: 120, height: 24))
         set(remaining, OSDText.remaining(state), OSDStyle.font(.body, 18), OSDStyle.text62,
             CGRect(x: L.width - L.margin - 160, y: L.timesTop, width: 160, height: 24), align: .right)
-        track.frame = CGRect(x: L.trackLeft, y: L.trackTop, width: L.trackWidth, height: 6)
-        layoutNotches()
+        layoutSeek()
+        // Jellyvin's: the state word in accent, the rest in the title's face and ink, full width
+        let nowFont = OSDStyle.font(.title, 22), now = NSMutableAttributedString()
+        now.append(text(state.paused ? "PAUSED" : "NOW PLAYING", nowFont, OSDStyle.accent))
+        now.append(text(" - " + state.title.uppercased(), nowFont, OSDStyle.text))
+        set(nowLine, "", nowFont, OSDStyle.text, CGRect(x: L.margin, y: L.nowLineTop, width: L.width - 2 * L.margin, height: 35))
+        nowLine.string = now
         hitRects.append((.seek, CGRect(x: L.trackLeft, y: L.bladeTop - 1, width: L.trackWidth, height: 24)))
 
         layoutPills()   // first: the keys need to know where the pills start
@@ -214,13 +271,12 @@ class NativeOSD: NSView, EventSubscriber {
         setScale(canvas, (window?.backingScaleFactor ?? 2) * s)
     }
 
-    var kickerText: String {
-        if let f = dragFraction {
-            let delta = f * state.duration - state.position
-            let m = Int(abs(delta)) / 60, sec = Int(abs(delta)) % 60
-            return String(format: "SEEKING %@%d:%02d", delta < 0 ? "\u{2212}" : "+", m, sec)
-        }
-        return state.paused ? "PAUSED" : "NOW PLAYING"
+    // the kicker says what the player is doing; how far a seek has gone is the readout's (Jellyvin)
+    var kickerText: String { return state.paused ? "PAUSED" : "NOW PLAYING" }
+
+    var readoutText: String {
+        let delta = seekOffset ?? 0, s = Int(abs(delta).rounded())
+        return String(format: "SEEKING %@%d:%02d", delta < 0 ? "\u{2212}" : "+", s / 60, s % 60)
     }
 
     var shownPosition: Double { return dragFraction.map { $0 * state.duration } ?? state.position }
@@ -236,7 +292,7 @@ class NativeOSD: NSView, EventSubscriber {
                 plate.borderColor = OSDStyle.lineBadge
                 plate.cornerRadius = 8
                 plate.addSublayer(text)
-                canvas.addSublayer(plate)
+                band.addSublayer(plate)
                 return (plate, text)
             }
             lastBadges = labels
@@ -247,7 +303,7 @@ class NativeOSD: NSView, EventSubscriber {
             let w = OSDStyle.width(label, font) + 32
             right -= w
             badges[i].0.frame = CGRect(x: right, y: L.badgesTop, width: w, height: 40)
-            set(badges[i].1, label, font, OSDStyle.textDim, CGRect(x: 0, y: 10, width: w, height: 22), align: .center)
+            setCentred(badges[i].1, label, font, OSDStyle.textDim, in: CGRect(x: 0, y: 0, width: w, height: 40))
             right -= 8
         }
     }
@@ -263,7 +319,7 @@ class NativeOSD: NSView, EventSubscriber {
         for (i, n) in notches.enumerated() {
             n.isHidden = i >= fractions.count
             if i < fractions.count {
-                n.frame = CGRect(x: track.bounds.width * fractions[i] - 1.5, y: 0, width: 3, height: 6)
+                n.frame = CGRect(x: track.bounds.width * fractions[i] - 1.5, y: 0, width: 3, height: track.bounds.height)
             }
         }
     }
@@ -314,13 +370,13 @@ class NativeOSD: NSView, EventSubscriber {
             pill.plate.transform = CATransform3DIdentity
             pill.plate.frame = frame
             pill.icon.frame = CGRect(x: leftPad, y: 16, width: 16, height: 16)
-            set(pill.label, word, wide, OSDStyle.text62,
-                CGRect(x: leftPad + 26, y: 13, width: wordW, height: 22))
+            setCentred(pill.label, word, wide, OSDStyle.text62,
+                       in: CGRect(x: leftPad + 26, y: 0, width: wordW, height: 48), horizontally: false)
             pill.chip.isHidden = tag == nil
             if let tag = tag {
                 let cx = leftPad + 26 + wordW + 4
                 pill.chip.frame = CGRect(x: cx, y: 10, width: tagW, height: 28)
-                set(pill.tag, tag, wide, OSDStyle.text, CGRect(x: cx, y: 13, width: tagW, height: 22), align: .center)
+                setCentred(pill.tag, tag, wide, OSDStyle.text, in: pill.chip.frame)
             }
             hitRects.append((pill.control, frame))
             right -= 16
@@ -385,16 +441,46 @@ class NativeOSD: NSView, EventSubscriber {
         let f = dragFraction ?? state.fraction
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        played.frame = CGRect(x: 0, y: 0, width: track.bounds.width * f, height: 6)
-        blade.frame = CGRect(x: geo.trackLeft + geo.trackWidth * f - 2.5, y: geo.bladeTop, width: 5, height: 22)
+        placeProgress(f)
         let second = Int(shownPosition)
         if force || second != lastSecond {
             lastSecond = second
             elapsed.string = text(OSDText.time(shownPosition), OSDStyle.font(.body, 18), OSDStyle.text)
             remaining.string = text(OSDText.remaining(state), OSDStyle.font(.body, 18), OSDStyle.text62)
             clock.string = text(OSDText.clock(state), OSDStyle.font(.body, 20), OSDStyle.text62)
+            if seekOffset != nil {   // once settled it keeps its last words while it fades
+                let font = OSDStyle.font(.wide, 15)
+                setCentred(readout, readoutText, font, OSDStyle.accent,
+                           in: CGRect(x: geo.trackLeft, y: geo.readoutTop, width: geo.trackWidth, height: font.capHeight))
+            }
         }
         CATransaction.commit()
+    }
+
+    // Jellyvin's focused seek bar, on hover: the track and notches grow 6 → 12 about the track's
+    // centreline, the fill and blade take jv_accent_deep, and the blade grows 5×22 → 8×34 under the
+    // knob glow. Jellyvin crossfades two fixed-size bars; layers can animate the sizes themselves.
+    var seekHot: Bool { return hovered == .seek }
+
+    func layoutSeek() {
+        let L = geo, hot = seekHot, h: CGFloat = hot ? 12 : 6
+        track.frame = CGRect(x: L.trackLeft, y: L.trackTop + 3 - h / 2, width: L.trackWidth, height: h)
+        track.cornerRadius = h / 2
+        played.backgroundColor = hot ? OSDStyle.accentDeep : OSDStyle.accent
+        blade.backgroundColor = hot ? OSDStyle.accentDeep : OSDStyle.text
+        blade.shadowColor = OSDStyle.accent
+        blade.shadowOffset = .zero
+        blade.shadowRadius = 18
+        blade.shadowOpacity = hot ? 0.65 : 0
+        layoutNotches()
+        placeProgress(dragFraction ?? state.fraction)
+    }
+
+    func placeProgress(_ f: Double) {
+        let L = geo, size = seekHot ? CGSize(width: 8, height: 34) : CGSize(width: 5, height: 22)
+        played.frame = CGRect(x: 0, y: 0, width: track.bounds.width * f, height: track.bounds.height)
+        blade.frame = CGRect(x: L.trackLeft + L.trackWidth * f - size.width / 2, y: L.trackTop + 3 - size.height / 2,
+                             width: size.width, height: size.height)
     }
 
     // MARK: hover
@@ -404,10 +490,19 @@ class NativeOSD: NSView, EventSubscriber {
     // (rows 102%) over 260 ms cubic ease-out, in and out.
     // Instant with Reduce Motion.
     func applyHover(animated: Bool) {
+        CATransaction.begin()   // the seek bar's own clock: 200 ms cubic out to grow, 160 ms cubic in back
+        if animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            CATransaction.setAnimationDuration(seekHot ? 0.2 : 0.16)
+            CATransaction.setAnimationTimingFunction(seekHot ? OSDMotion.cubicOut : OSDMotion.cubicIn)
+        } else {
+            CATransaction.setDisableActions(true)
+        }
+        layoutSeek()
+        CATransaction.commit()
         CATransaction.begin()
         if animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             CATransaction.setAnimationDuration(0.26)
-            CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(controlPoints: 0.215, 0.61, 0.355, 1))
+            CATransaction.setAnimationTimingFunction(OSDMotion.cubicOut)
         } else {
             CATransaction.setDisableActions(true)
         }
@@ -483,6 +578,22 @@ class NativeOSD: NSView, EventSubscriber {
         layer.frame = frame
     }
 
+    // Centres the letters themselves on box: up-down on the capitals, and left-right on the ink
+    // when asked. Centring the line box instead sits text high, and the t140 cuts carry their
+    // tracking after the last letter too, which pushes centred text left.
+    func setCentred(_ layer: CATextLayer, _ s: String, _ font: NSFont, _ color: CGColor, in box: CGRect,
+                    horizontally: Bool = true) {
+        let str = text(s, font, color)
+        let ink = CTLineGetBoundsWithOptions(CTLineCreateWithAttributedString(str), .useGlyphPathBounds)
+        let x = horizontally ? box.midX - ink.midX : box.minX
+        let y = box.midY - (font.ascender - font.capHeight / 2)   // the layer draws its baseline at ascender
+        layer.string = str
+        layer.alignmentMode = .left
+        layer.truncationMode = .none
+        layer.frame = CGRect(x: x, y: y, width: ceil(str.size().width) + 2,
+                             height: ceil(font.ascender - font.descender + font.leading))
+    }
+
     func setScale(_ layer: CALayer, _ scale: CGFloat) {
         layer.contentsScale = scale
         layer.sublayers?.forEach { setScale($0, scale) }
@@ -491,10 +602,7 @@ class NativeOSD: NSView, EventSubscriber {
     // MARK: showing and hiding
 
     func poke() {
-        if !shown {
-            shown = true
-            fade(to: 1)
-        }
+        setMode(.osd)
         hideTimer?.invalidate()
         hideTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: false) { [weak self] _ in self?.hideIfIdle() }
     }
@@ -506,15 +614,109 @@ class NativeOSD: NSView, EventSubscriber {
             poke()
             return
         }
-        shown = false
-        hovered = nil
-        fade(to: 0)
+        hide()
     }
 
-    func fade(to opacity: Float) {
+    func hide() {
+        hideTimer?.invalidate()
+        hovered = nil
+        if panelType != nil { openPanel(nil) } else { applyHover(animated: false) }
+        setMode(.hidden)
+    }
+
+    // Any seek once the file is playing (a key, an OSD button, a drag, a script) shows SEEKING ±m:ss
+    // under the track, counted from where the run of seeks began. With the OSD closed it also brings up
+    // the seek-only bar. Both go once the seek has stood for Jellyvin's hold: 2.6 s, then a 400 ms fade.
+    func seeked() {
+        if seekFrom == nil { seekFrom = state.position }   // mpv sends the seek before its time-pos
+        if seekOffset == nil {
+            seekOffset = 0
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            readout.opacity = 1
+            CATransaction.commit()
+        }
+        if shown { poke() } else { setMode(.seek) }
+        holdSeek()
+    }
+
+    func holdSeek() {
+        settleTimer?.invalidate()
+        settleTimer = Timer.scheduledTimer(withTimeInterval: 2.6, repeats: false) { [weak self] _ in self?.seekSettled() }
+    }
+
+    func seekSettled() {
+        if dragFraction != nil { return holdSeek() }
+        seekOffset = nil
         CATransaction.begin()
-        CATransaction.setAnimationDuration(0.2)
-        layer?.opacity = opacity
+        CATransaction.setAnimationDuration(0.4)
+        CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .linear))
+        readout.opacity = 0
+        CATransaction.commit()
+        if mode == .seek { setMode(.hidden) }
+    }
+
+    // a click on the video above the OSD band (and outside the track panel) hides the OSD
+    func clickedVideo(_ event: NSEvent) {
+        guard shown, event.window == window else { return }
+        let v = convert(event.locationInWindow, from: nil)
+        let p = CGPoint(x: v.x / geo.scale, y: v.y / geo.scale)
+        guard bounds.contains(v), p.y < geo.veilTop, panel.isHidden || !panel.frame.contains(p) else { return }
+        hide()
+        hiddenAt = event.locationInWindow
+    }
+
+    // Jellyvin's entrance, for the OSD and the seek-only bar alike: rise 60 px over 260 ms, cubic
+    // ease-out, fading in over 240 ms. The OSD leaves 60 px down over 180 ms, cubic ease-in, fading over
+    // 160 ms; the seek-only bar only fades, over 400 ms. Opening the OSD over the seek-only bar keeps
+    // the seek row still: the controls rise and fade in as usual, the veil rises with them to its full
+    // height, and the NOW PLAYING line fades out under them. Reduce Motion keeps the fades and drops the slides. Animated on the canvas and its
+    // groups, not the view's own layer, which AppKit doesn't animate implicitly.
+    func setMode(_ new: Mode) {
+        let old = mode
+        guard new != old else { return }
+        mode = new
+        if old == .hidden {   // every group starts from below, unseen
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            [band, row, line].forEach { $0.transform = OSDMotion.away }
+            veil.transform = veilDrop
+            band.opacity = new == .osd ? 1 : 0
+            line.opacity = new == .seek ? 1 : 0
+            CATransaction.commit()
+        }
+        let linear = CAMediaTimingFunction(name: .linear)
+        let target: [CALayer] = new == .hidden ? (old == .osd ? [band, row, line] : []) : (new == .osd ? [band, row] : [row, line])
+        animate(new == .hidden ? (old == .osd ? 0.16 : 0.4) : 0.24, linear) {
+            if new == .osd && old == .seek {
+                band.opacity = 1
+                line.opacity = 0
+            } else {
+                canvas.opacity = new == .hidden ? 0 : 1
+            }
+        }
+        animate(new == .hidden ? 0.18 : 0.26, new == .hidden ? OSDMotion.cubicIn : OSDMotion.cubicOut, slide: true) {
+            target.forEach { $0.transform = new == .hidden ? OSDMotion.away : CATransform3DIdentity }
+            if new != .hidden { veil.transform = veilDrop }   // rises with the controls over the seek-only bar
+        }
+    }
+
+    // The seek-only bar starts at its times, not at a kicker, so its veil sits lower by that difference:
+    // the same fade above the first line of text, over less of the picture (owner's call; Jellyvin uses
+    // one veil for both).
+    var veilDrop: CATransform3D {
+        return mode == .seek ? CATransform3DMakeTranslation(0, geo.timesTop - geo.kickerTop, 0) : CATransform3DIdentity
+    }
+
+    func animate(_ duration: CFTimeInterval, _ timing: CAMediaTimingFunction, slide: Bool = false, _ body: () -> Void) {
+        CATransaction.begin()
+        if slide && NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            CATransaction.setDisableActions(true)
+        } else {
+            CATransaction.setAnimationDuration(duration)
+            CATransaction.setAnimationTimingFunction(timing)
+        }
+        body()
         CATransaction.commit()
     }
 
@@ -544,6 +746,11 @@ class NativeOSD: NSView, EventSubscriber {
     }
 
     override func mouseMoved(with event: NSEvent) {
+        // the pointer wobbles as it clicks; only a real move brings the OSD back after a click hid it
+        if let h = hiddenAt {
+            if hypot(event.locationInWindow.x - h.x, event.locationInWindow.y - h.y) < 10 { return }
+            hiddenAt = nil
+        }
         poke()
         let now = control(at: designPoint(event))
         if now != hovered {
@@ -602,7 +809,6 @@ class NativeOSD: NSView, EventSubscriber {
         let f = min(max(Double((p.x - geo.trackLeft) / geo.trackWidth), 0), 1)
         dragFraction = f
         input.command(String(format: "no-osd seek %.3f absolute+%@", f * state.duration, exact ? "exact" : "keyframes"))
-        set(kicker, kickerText, OSDStyle.font(.wide, 15), OSDStyle.accent, kicker.frame)
         updateProgress(force: true)
     }
 
@@ -611,6 +817,12 @@ class NativeOSD: NSView, EventSubscriber {
         panelType = type
         relayout()
     }
+}
+
+enum OSDMotion {
+    static let away = CATransform3DMakeTranslation(0, 60, 0)   // hidden: 60 design px down
+    static let cubicOut = CAMediaTimingFunction(controlPoints: 0.215, 0.61, 0.355, 1)
+    static let cubicIn = CAMediaTimingFunction(controlPoints: 0.55, 0.055, 0.675, 0.19)
 }
 
 enum OSDStyle {
@@ -631,6 +843,7 @@ enum OSDStyle {
     static let lineBadge = rgb(243, 244, 247, 0.18)
     static let notch = rgb(7, 8, 12, 0.6)
     static let panel = rgb(11, 13, 19)            // jv_panel, solid: no blur behind it
+    static let accentDeep = rgb(0, 225, 255)      // jv_accent_deep: the hovered seek bar
     static let accentRing = rgb(77, 234, 255, 0.6)
     static let accentTint = rgb(77, 234, 255, 0.22)   // hovered panel row
     static let clear = rgb(255, 255, 255, 0)
