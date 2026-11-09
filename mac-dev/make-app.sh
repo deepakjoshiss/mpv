@@ -19,6 +19,7 @@ find "$D/lib" -name '*.dylib' -type f ! -name 'libMoltenVK.dylib' -exec cp {} "$
 
 # MoltenVK where the Vulkan loader looks inside an app bundle
 mkdir -p "$C/Frameworks" "$C/Resources/vulkan/icd.d"
+mkdir -p "$C/Resources/fonts" && cp "$D/fonts/"* "$C/Resources/fonts/"   # --macos-osd (Archivo, OFL)
 cp "$D/lib/libMoltenVK.dylib" "$C/Frameworks/"
 cat > "$C/Resources/vulkan/icd.d/MoltenVK_icd.json" <<'EOF'
 {
@@ -37,6 +38,9 @@ plutil -replace CFBundleName -string "mpv Native" "$P"
 plutil -replace CFBundleShortVersionString -string "$VER" "$P"
 plutil -replace LSApplicationCategoryType -string public.app-category.video "$P"
 sed -i '' 's|^log-file=.*|log-file=~/Library/Logs/mpv-native.log|' "$C/Resources/mpv.conf"
+# Settings for this app only (e.g. its own OSD instead of uosc) go in ~/.config/mpv/mpv-native.conf.
+# It's read before the shared ~/.config/mpv/mpv.conf, so the same option set there wins.
+echo "include=~~home/mpv-native.conf" >> "$C/Resources/mpv.conf"
 
 find "$C/MacOS/lib" "$C/Frameworks" -name '*.dylib' -exec codesign --force -s - {} \; 2>/dev/null
 codesign --force -s - "$C/MacOS/mpv"

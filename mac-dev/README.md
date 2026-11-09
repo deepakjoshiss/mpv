@@ -22,6 +22,10 @@ builds against the library snapshot kept here.
 - **Shared config.** Both apps read `~/.config/mpv/mpv.conf`, which sets `macos-native-video=yes`.
   The stock app doesn't know that option, prints one "option not found" line at start-up, and plays
   normally.
+- **mpv Native's own settings** go in `~/.config/mpv/mpv-native.conf`, which only this app reads
+  (`make-app.sh` puts an `include` of it in the app's own `mpv.conf`). It's read before the shared
+  `mpv.conf`, so an option set in both takes the shared value. The owner's copy turns on
+  `--macos-osd` and loads every shared script except uosc and thumbfast.
 - **Signing.** Ad hoc only, with no Apple or work identity.
 
 ## Checking a change

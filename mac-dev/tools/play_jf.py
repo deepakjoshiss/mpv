@@ -1,7 +1,7 @@
 # usage: tools/with-jellyfin.sh python3 tools/play_jf.py <item_id> <seconds> <log_file> <mpv binary> [mpv args...]
 # Streams a Jellyfin item with mpv for <seconds> (or until mpv exits), then redacts the token from <log_file>.
 # The auth header reaches mpv through a private (0600) temporary config file, deleted afterwards.
-# Stopping this script (SIGTERM, Ctrl-C) stops mpv and still cleans up.
+# Stopping this script (SIGTERM, Ctrl-C) stops mpv and still cleans up; an mpv that ignores SIGTERM is killed.
 import os, re, signal, subprocess, sys, tempfile
 import jf
 
@@ -21,7 +21,11 @@ except subprocess.TimeoutExpired:
 finally:
     if p and p.poll() is None:
         p.terminate()
-        p.wait(timeout=10)
+        try:
+            p.wait(timeout=10)
+        except subprocess.TimeoutExpired:   # a hung mpv must not skip the cleanup below
+            p.kill()
+            p.wait()
     os.unlink(conf)
     if os.path.exists(logf):
         t = open(logf, encoding="utf-8", errors="replace").read()
