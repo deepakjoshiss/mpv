@@ -427,8 +427,17 @@ class Common: NSObject {
                                         x1: Int32(originX + rv.size.width),
                                         y1: Int32(originY + rv.size.height))
 
+        // never larger than the screen: AppKit puts a window that hangs far over the edges of a
+        // non-main screen on another screen, and fullscreen then follows it there
+        var sizeConstraint = m_geometry()
+        sizeConstraint.w = 100
+        sizeConstraint.h = 100
+        sizeConstraint.w_per = true
+        sizeConstraint.h_per = true
+        sizeConstraint.wh_valid = true
+
         var geo: vo_win_geometry = vo_win_geometry()
-        vo_calc_window_geometry(vo, vo.pointee.opts, &screenRC, &screenRC, Double(screen.backingScaleFactor), false, &geo, nil)
+        vo_calc_window_geometry(vo, vo.pointee.opts, &screenRC, &screenRC, Double(screen.backingScaleFactor), false, &geo, &sizeConstraint)
         vo_apply_window_geometry(vo, &geo)
 
         let height = CGFloat(geo.win.y1 - geo.win.y0)
