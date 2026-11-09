@@ -69,6 +69,7 @@ class EventHelper {
     unowned let appHub: AppHub
     var mpv: OpaquePointer?
     var events: [String: [Int: EventSubscriber]] = [:]
+    var lastEvents: [String: Event] = [:]
 
     init?(_ appHub: AppHub, _ mpv: OpaquePointer) {
         if !appHub.isApplication {
@@ -94,6 +95,10 @@ class EventHelper {
             }
             events[event.idReset]?[subscriber.uid] = subscriber
             events[event.id]?[subscriber.uid] = subscriber
+            // a property is observed once; a later subscriber gets its current value from here
+            if let last = lastEvents[event.id] {
+                subscriber.handle(event: last)
+            }
         }
     }
 
@@ -145,22 +150,27 @@ class EventHelper {
             case MPV_FORMAT_INT64:
                 event = .init(name: name, format: format, int: TypeHelper.toInt(property.data))
             case MPV_FORMAT_NODE:
+                // only read the union member the node holds; reading a string as a list crashes
                 let node = TypeHelper.toNode(property.data)
+                let nf = node?.format
                 event = .init(
                     name: name,
                     format: format,
-                    string: TypeHelper.nodeToString(node),
-                    bool: TypeHelper.nodeToBool(node),
-                    int: TypeHelper.nodeToInt(node),
-                    double: TypeHelper.nodeToDouble(node),
-                    array: TypeHelper.nodeToArray(node)
+                    string: nf == MPV_FORMAT_STRING ? TypeHelper.nodeToString(node) : nil,
+                    bool: nf == MPV_FORMAT_FLAG ? TypeHelper.nodeToBool(node) : nil,
+                    int: nf == MPV_FORMAT_INT64 ? TypeHelper.nodeToInt(node) : nil,
+                    double: nf == MPV_FORMAT_DOUBLE ? TypeHelper.nodeToDouble(node) : nil,
+                    array: nf == MPV_FORMAT_NODE_ARRAY ? TypeHelper.nodeToArray(node) : []
                 )
             case MPV_FORMAT_NONE:
                 event = .init(name: name, format: format)
             default: break
             }
 
-            if let e = event { subscriber.handle(event: e) }
+            if let e = event {
+                lastEvents[name + String(format.rawValue)] = e
+                subscriber.handle(event: e)
+            }
         }
     }
 }
