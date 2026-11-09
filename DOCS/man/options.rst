@@ -7264,6 +7264,16 @@ them.
     shaders, tone mapping and interpolation options, and video screenshots still come from
     libplacebo.
 
+``--macos-osd=<yes|no>``
+    Draw an on-screen controller natively, with Core Animation in a view above the video, instead
+    of leaving it to a Lua script (default: no). It shows the title, a seek bar with chapter marks,
+    playback keys, the clock and format badges, and subtitle and audio keys tagged with the
+    selected track and the track count that open a track list. It scales with the window and
+    drops less needed items in small windows. Turn off the built-in OSC (``--osc=no``) and other
+    OSC scripts when using it.
+
+    Only works on macOS.
+
 ``--macos-bundle-path=path1,path2,...``
     App Bundles operate in their own shell environment that is different from the one in the
     terminal. The default PATH variable for all Bundles is ``/usr/bin:/bin:/usr/sbin:/sbin``.

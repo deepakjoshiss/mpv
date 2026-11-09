@@ -1698,7 +1698,9 @@ endif
 if features['cocoa'] and features['vulkan'] and features['swift']
     swift_sources += files('video/out/mac_common.swift',
                            'video/out/mac/metal_layer.swift',
-                           'video/out/mac/native_video.swift')
+                           'video/out/mac/native_video.swift',
+                           'video/out/mac/native_osd.swift',
+                           'video/out/mac/osd_model.swift')
     sources += files('video/out/vulkan/context_mac.m')
 endif
 

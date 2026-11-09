@@ -20,6 +20,7 @@ import Cocoa
 class MacCommon: Common {
     @objc var layer: MetalLayer?
     @objc var nativeVideo: NativeVideo?
+    var osd: NativeOSD?
 
     var presentation: Presentation?
     var timer: PreciseTimer?
@@ -63,6 +64,11 @@ class MacCommon: Common {
                 initView(vo, nativeVideo?.container ?? layer)
                 initWindow(vo, previousActiveApp)
                 initWindowState()
+                if option.mac.macos_osd, let content = window?.contentView {
+                    let osd = NativeOSD(frame: content.bounds)
+                    content.addSubview(osd, positioned: .above, relativeTo: view)
+                    self.osd = osd
+                }
             }
 
             if forcePosition {

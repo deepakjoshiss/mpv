@@ -69,6 +69,7 @@ const struct m_sub_options macos_conf = {
             {"system", RENDER_TIMER_SYSTEM}, {"feedback", RENDER_TIMER_PRESENTATION_FEEDBACK})},
         {"macos-menu-shortcuts", OPT_BOOL(macos_menu_shortcuts)},
         {"macos-native-video", OPT_BOOL(macos_native_video)},
+        {"macos-osd", OPT_BOOL(macos_osd)},
         {"macos-bundle-path", OPT_STRINGLIST(macos_bundle_path)},
         {"cocoa-cb-sw-renderer", OPT_CHOICE(cocoa_cb_sw_renderer,
             {"auto", -1}, {"no", 0}, {"yes", 1})},
