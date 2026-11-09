@@ -77,6 +77,10 @@ class NativeOSD: NSView, EventSubscriber {
     var seekOffset: Double?     // how far the current run of seeks has jumped, playback not counted
     var seekFrom: Double?       // the position a seek left from, until its new time-pos arrives
     var settleTimer: Timer?
+    var subBase: Double?        // the user's sub-pos, put back when the OSD hides
+    var subApplied: Double?     // the sub-pos last set here
+    var subImage = false, subCodec = ""
+    var dimH = 0.0, dimTop = 0.0, dimBottom = 0.0   // osd-dimensions: window height, letterbox bars
     var hideTimer: Timer?
     var clickMonitor: Any?
     var hiddenAt: NSPoint?      // where a click on the video hid the OSD
@@ -108,6 +112,12 @@ class NativeOSD: NSView, EventSubscriber {
         ev?.subscribe(self, event: .init(name: "speed", format: MPV_FORMAT_DOUBLE))
         ev?.subscribe(self, event: .init(name: "pause", format: MPV_FORMAT_FLAG))
         ev?.subscribe(self, event: .init(name: "MPV_EVENT_START_FILE"))
+        ev?.subscribe(self, event: .init(name: "sub-pos", format: MPV_FORMAT_DOUBLE))
+        ev?.subscribe(self, event: .init(name: "current-tracks/sub/image", format: MPV_FORMAT_FLAG))
+        ev?.subscribe(self, event: .init(name: "current-tracks/sub/codec", format: MPV_FORMAT_STRING))
+        ev?.subscribe(self, event: .init(name: "osd-dimensions/h", format: MPV_FORMAT_DOUBLE))
+        ev?.subscribe(self, event: .init(name: "osd-dimensions/mt", format: MPV_FORMAT_DOUBLE))
+        ev?.subscribe(self, event: .init(name: "osd-dimensions/mb", format: MPV_FORMAT_DOUBLE))
         ev?.subscribe(self, event: .init(name: "MPV_EVENT_SEEK"))
         ev?.subscribe(self, event: .init(name: "MPV_EVENT_PLAYBACK_RESTART"))
         ev?.subscribe(self, event: .init(name: "chapter-list", format: MPV_FORMAT_NODE))
@@ -197,6 +207,20 @@ class NativeOSD: NSView, EventSubscriber {
         case "speed": state.speed = event.double ?? 1
         case "pause": state.paused = event.bool ?? false; poke()
         case "MPV_EVENT_START_FILE": started = false; seekFrom = nil; return
+        case "sub-pos":
+            guard let v = event.double else { return }
+            if let a = subApplied {
+                if abs(v - a) < 0.01 { return }   // ours, coming back
+                subBase = (subBase ?? a) + v - a  // the user moved it (r/R): keep that, lifted or not
+            } else {
+                subBase = v
+            }
+            subApplied = v
+        case "current-tracks/sub/image": subImage = event.bool ?? false
+        case "current-tracks/sub/codec": subCodec = event.string ?? ""
+        case "osd-dimensions/h": dimH = event.double ?? 0
+        case "osd-dimensions/mt": dimTop = event.double ?? 0
+        case "osd-dimensions/mb": dimBottom = event.double ?? 0
         case "MPV_EVENT_PLAYBACK_RESTART":
             started = true
             if seekOffset != nil { holdSeek() }   // the hold counts from where the seek landed
@@ -262,13 +286,13 @@ class NativeOSD: NSView, EventSubscriber {
         nowLine.string = now
         hitRects.append((.seek, CGRect(x: L.trackLeft, y: L.bladeTop - 1, width: L.trackWidth, height: 24)))
 
-        layoutPills()   // first: the keys need to know where the pills start
-        layoutKeys()
+        layoutControls()
         layoutPanel()
         updateProgress(force: true)
         applyHover(animated: false)
         CATransaction.commit()
         setScale(canvas, (window?.backingScaleFactor ?? 2) * s)
+        liftSubs()
     }
 
     // the kicker says what the player is doing; how far a seek has gone is the readout's (Jellyvin)
@@ -324,15 +348,33 @@ class NativeOSD: NSView, EventSubscriber {
         }
     }
 
-    func layoutKeys() {
+    // The centre keys stay centred and keep 16 px from the keys either side by dropping, as the window
+    // narrows: the chapter keys (PgUp/PgDn still work), then the ±5 s keys (the arrows), then the audio
+    // pill, then the options key and the subtitles pill together (owner's order). Play/pause stays.
+    func layoutControls() {
         let L = geo
-        let left = L.compact ? [Control.options] : [.bookmark, .info, .options]
-        // the centre group stays centred; once it would come within 16 px of the pills, the chapter
-        // keys go (PgUp/PgDn still work)
-        // ponytail: below ~520 px wide the three keys reach the pills too; nothing drops further yet
-        var centre: [Control] = [.chapterPrev, .back, .playPause, .forward, .chapterNext]
-        let pillsLeft = pills.map { $0.plate.frame.minX }.min() ?? L.width
-        if (L.width + 5 * 86 + 4 * 16) / 2 + 16 > pillsLeft { centre = [.back, .playPause, .forward] }
+        let left: [Control] = L.compact ? [.options] : [.bookmark, .info, .options]
+        let steps: [(centre: [Control], pills: [Control], left: [Control])] = [
+            ([.chapterPrev, .back, .playPause, .forward, .chapterNext], [.subs, .audio], left),
+            ([.back, .playPause, .forward], [.subs, .audio], left),
+            ([.playPause], [.subs, .audio], left),
+            ([.playPause], [.subs], left),
+            ([.playPause], [], left.filter { $0 != .options }),
+        ]
+        let step = steps.first { s in
+            let n = CGFloat(s.centre.count), w = n * 86 + (n - 1) * 16
+            let shown = pills.filter { s.pills.contains($0.control) }
+            let pillsW = shown.map { pillWidth($0) }.reduce(0, +) + CGFloat(max(shown.count - 1, 0)) * 16
+            let rightLimit = shown.isEmpty ? L.width - L.margin : L.width - L.margin - pillsW - 16
+            let leftLimit = s.left.isEmpty ? L.margin : L.margin + CGFloat(s.left.count) * 102
+            return (L.width + w) / 2 <= rightLimit && (L.width - w) / 2 >= leftLimit
+        } ?? steps[steps.count - 1]
+        layoutPills(step.pills)
+        layoutKeys(left: step.left, centre: step.centre)
+    }
+
+    func layoutKeys(left: [Control], centre: [Control]) {
+        let L = geo
         let n = CGFloat(centre.count)
         let centreX = (L.width - (n * 86 + (n - 1) * 16)) / 2
         for key in keys {
@@ -353,10 +395,20 @@ class NativeOSD: NSView, EventSubscriber {
         }
     }
 
-    func layoutPills() {
+    func pillWidth(_ pill: Pill) -> CGFloat {
+        let L = geo, wide = OSDStyle.font(.wide, 15), type = pill.control == .subs ? "sub" : "audio"
+        let word = L.compact ? "" : (type == "sub" ? "SUBS" : "AUD")
+        let wordW = word.isEmpty ? 0 : OSDStyle.width(word, wide) + 10
+        let tagW = OSDText.tag(state, type).map { OSDStyle.width($0, wide) + 18 }
+        return (L.compact ? 16 : 20) + 16 + 10 + wordW + (tagW.map { 4 + $0 + 10 } ?? 10)
+    }
+
+    func layoutPills(_ shownPills: [Control]) {
         let L = geo
         var right = L.width - L.margin
         for pill in pills.reversed() {
+            pill.plate.isHidden = !shownPills.contains(pill.control)
+            if pill.plate.isHidden { continue }
             let type = pill.control == .subs ? "sub" : "audio"
             let word = L.compact ? "" : (type == "sub" ? "SUBS" : "AUD")
             let wide = OSDStyle.font(.wide, 15)
@@ -364,7 +416,7 @@ class NativeOSD: NSView, EventSubscriber {
             let wordW = word.isEmpty ? 0 : OSDStyle.width(word, wide) + 10
             let tagW = tag.map { OSDStyle.width($0, wide) + 18 } ?? 0
             let leftPad: CGFloat = L.compact ? 16 : 20
-            let w = leftPad + 16 + 10 + wordW + (tag != nil ? 4 + tagW + 10 : 10)
+            let w = pillWidth(pill)
             right -= w
             let frame = CGRect(x: right, y: L.keysTop, width: w, height: 48)
             pill.plate.transform = CATransform3DIdentity
@@ -699,6 +751,25 @@ class NativeOSD: NSView, EventSubscriber {
             target.forEach { $0.transform = new == .hidden ? OSDMotion.away : CATransform3DIdentity }
             if new != .hidden { veil.transform = veilDrop }   // rises with the controls over the seek-only bar
         }
+        liftSubs()
+    }
+
+    // Subtitles rise above the highest line the OSD shows (the kicker, or the seek-only bar's times) and
+    // drop back when it hides. sub-pos lifts by a share of the window for plain text subtitles, which
+    // may sit in the letterbox bars, and of the picture for image and ASS ones, which don't.
+    // ponytail: a jump, not a slide; sub-pos is re-rendered by mpv, so a slide would mean stepping it
+    func liftSubs() {
+        guard let base = subBase else { return }
+        var pos = base
+        if let top = mode == .osd ? geo.kickerTop : (mode == .seek ? geo.timesTop : nil) {
+            let share = Double((geo.height - top) / geo.height)
+            let onPicture = subImage || subCodec == "ass" || subCodec == "ssa"
+            let picture = onPicture && dimH > 0 ? max(dimH - dimTop - dimBottom, 1) / dimH : 1
+            pos = max(0, base - 100 * share / picture)
+        }
+        if let a = subApplied, abs(a - pos) < 0.01 { return }
+        subApplied = pos
+        input.command(String(format: "no-osd set sub-pos %.3f", pos))
     }
 
     // The seek-only bar starts at its times, not at a kicker, so its veil sits lower by that difference:
