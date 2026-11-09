@@ -99,7 +99,7 @@ class NativeOSD: NSView, EventSubscriber {
     // MARK: building
 
     func build() {
-        veil.colors = [0, 0.3, 0.55, 0.72, 0.78, 0.8, 0.8].map { OSDStyle.bg.copy(alpha: $0)! }
+        veil.colors = [0, 0.3, 0.55, 0.72, 0.78, 0.8, 0.8].map { OSDStyle.veil.copy(alpha: $0)! }
         veil.locations = [0, 0.1, 0.2, 0.35, 0.5, 0.7, 1]
         veil.startPoint = CGPoint(x: 0.5, y: 0)
         veil.endPoint = CGPoint(x: 0.5, y: 1)
@@ -205,8 +205,8 @@ class NativeOSD: NSView, EventSubscriber {
         layoutNotches()
         hitRects.append((.seek, CGRect(x: L.trackLeft, y: L.bladeTop - 1, width: L.trackWidth, height: 24)))
 
+        layoutPills()   // first: the keys need to know where the pills start
         layoutKeys()
-        layoutPills()
         layoutPanel()
         updateProgress(force: true)
         applyHover(animated: false)
@@ -271,8 +271,14 @@ class NativeOSD: NSView, EventSubscriber {
     func layoutKeys() {
         let L = geo
         let left = L.compact ? [Control.options] : [.bookmark, .info, .options]
-        let centre: [Control] = [.chapterPrev, .back, .playPause, .forward, .chapterNext]
-        let centreX = (L.width - (5 * 86 + 4 * 16)) / 2
+        // the centre group stays centred; once it would come within 16 px of the pills, the chapter
+        // keys go (PgUp/PgDn still work)
+        // ponytail: below ~520 px wide the three keys reach the pills too; nothing drops further yet
+        var centre: [Control] = [.chapterPrev, .back, .playPause, .forward, .chapterNext]
+        let pillsLeft = pills.map { $0.plate.frame.minX }.min() ?? L.width
+        if (L.width + 5 * 86 + 4 * 16) / 2 + 16 > pillsLeft { centre = [.back, .playPause, .forward] }
+        let n = CGFloat(centre.count)
+        let centreX = (L.width - (n * 86 + (n - 1) * 16)) / 2
         for key in keys {
             var x: CGFloat?
             if let i = left.firstIndex(of: key.control) { x = L.margin + CGFloat(i) * 102 }
@@ -612,7 +618,7 @@ enum OSDStyle {
         return CGColor(srgbRed: r / 255, green: g / 255, blue: b / 255, alpha: a)
     }
     // Jellyvin's colours/defaults.xml
-    static let bg = rgb(7, 8, 12)
+    static let veil = rgb(0, 0, 0)               // pure black (owner's call), not Jellyvin's #07080c
     static let text = rgb(243, 244, 247)
     static let text62 = rgb(243, 244, 247, 0.62)
     static let textDim = rgb(137, 138, 141)
